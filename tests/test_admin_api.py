@@ -107,6 +107,14 @@ def test_ingest_with_urls_calls_pipeline(client):
     mock_embed.assert_called_once()
 
 
+def test_ingest_reset_via_http_blocked(client):
+    """Reset KB qua HTTP bị từ chối (403) - chỉ cho phép qua CLI."""
+    body = {"topic": "anything", "reset": True}
+    r = client.post("/admin/ingest", json=body)
+    assert r.status_code == 403
+    assert "destructive" in r.json()["detail"].lower() or "an toàn" in r.json()["detail"]
+
+
 def test_stats_returns_structure(client):
     r = client.get("/admin/stats")
     assert r.status_code == 200

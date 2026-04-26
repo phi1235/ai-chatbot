@@ -1233,19 +1233,22 @@ def page_maintenance():
                 st.success(f"Rebuild xong với {res['chunks_indexed']:,} chunks")
 
     st.markdown("&nbsp;")
-    st.markdown('<div class="card-title">Reset toàn bộ Knowledge Base</div>', unsafe_allow_html=True)
-    st.caption("Xoá toàn bộ Chroma collection và re-ingest từ tất cả sources/*.json. Mất 5-10 phút.")
-    confirm = st.checkbox("Tôi hiểu thao tác này không thể hoàn tác", key="confirm_reset")
-    if st.button("Reset & Re-ingest All", disabled=not confirm, type="primary"):
-        with st.spinner("Đang reset + crawl + re-embed (5-10 phút)..."):
-            topics = get_sources()
-            if topics:
-                first = topics[0]["topic"]
-                trigger_ingest(topic=first, reset=True)
-                for t in topics[1:]:
-                    if t["count"] > 0:
-                        trigger_ingest(topic=t["topic"])
-        st.success("Reset hoàn tất")
+    st.markdown(
+        '<div class="card-title">Reset toàn bộ Knowledge Base</div>',
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "Reset KB là thao tác **destructive** — không có trong UI để tránh "
+        "click nhầm hoặc bị xâm nhập gây mất data.\n\n"
+        "Chỉ thực hiện qua CLI từ server admin:\n"
+        "```bash\n"
+        "python ingest.py --reset\n"
+        "```\n"
+        "Hoặc reset 1 topic cụ thể:\n"
+        "```bash\n"
+        "python ingest.py --topic <ten-topic> --reset\n"
+        "```"
+    )
 
 
 # ─── Render selected page ───────────────────────────────────────────────────

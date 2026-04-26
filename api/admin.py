@@ -112,11 +112,22 @@ async def delete_source(topic: str, body: dict = Body(...)):
 async def trigger_ingest(req: IngestRequest):
     """Trigger crawl + chunk + embed. Truyền `topic` (lấy từ sources/<topic>.json),
     hoặc `urls` (list ad-hoc), hoặc cả 2.
-    `reset=true` để xoá toàn bộ collection trước khi ingest.
+
+    Lưu ý: `reset=true` qua HTTP bị TỪ CHỐI vì là thao tác destructive.
+    Reset chỉ thực hiện qua CLI: `python ingest.py --reset`.
     """
     from crawler.fetch_data import crawl_sources
     from processor.chunker import process_documents
-    from processor.embedder import clear_collection, embed_and_store
+    from processor.embedder import embed_and_store
+
+    if req.reset:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Reset KB qua HTTP đã bị tắt vì lý do an toàn. "
+                "Dùng CLI: `python ingest.py --reset` từ server."
+            ),
+        )
 
     sources: list[dict[str, Any]] = []
 
@@ -131,9 +142,6 @@ async def trigger_ingest(req: IngestRequest):
 
     if not sources:
         raise HTTPException(status_code=400, detail="Cần ít nhất `topic` hoặc `urls`.")
-
-    if req.reset:
-        clear_collection()
 
     documents = crawl_sources(sources)
     chunks = process_documents(documents)
