@@ -62,6 +62,46 @@ def fetch_session_messages(api_url: str, session_id: str) -> list[dict]:
         return []
 
 
+def fetch_session_uploads(api_url: str, session_id: str) -> list[dict]:
+    try:
+        r = get_http_client().get(f"{api_url}/sessions/{session_id}/uploads", timeout=5.0)
+        r.raise_for_status()
+        return r.json().get("files", [])
+    except Exception:
+        return []
+
+
+def upload_file_to_session(api_url: str, session_id: str, file_obj) -> tuple[bool, str]:
+    """Upload file qua POST /sessions/{id}/upload. Trả về (success, message)."""
+    try:
+        files = {"file": (file_obj.name, file_obj.getvalue(), file_obj.type or "application/octet-stream")}
+        r = get_http_client().post(
+            f"{api_url}/sessions/{session_id}/upload",
+            files=files,
+            timeout=httpx.Timeout(120.0, connect=5.0, read=120.0),
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return True, f"Đã nạp {data['chunks']} chunks ({data['chars']:,} ký tự)"
+        try:
+            detail = r.json().get("detail", r.text)
+        except Exception:
+            detail = r.text
+        return False, f"Lỗi {r.status_code}: {detail}"
+    except Exception as exc:
+        return False, f"Không upload được: {exc}"
+
+
+def delete_upload_remote(api_url: str, session_id: str, doc_id: str) -> bool:
+    try:
+        r = get_http_client().delete(
+            f"{api_url}/sessions/{session_id}/uploads/{doc_id}", timeout=10.0,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def delete_session_remote(api_url: str, session_id: str) -> bool:
     try:
         r = get_http_client().delete(f"{api_url}/sessions/{session_id}", timeout=5.0)
@@ -511,6 +551,33 @@ st.markdown(
         letter-spacing: 0.06em;
         margin: 0.4rem 0 0.4rem 0.2rem;
     }
+    /* Upload item card */
+    .upload-item {
+        font-size: 0.82rem;
+        color: var(--text);
+        padding: 0.4rem 0.55rem;
+        border-radius: 8px;
+        background: var(--canvas);
+        border: 1px solid var(--border);
+        margin-bottom: 0.3rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .upload-item .upload-meta {
+        display: block;
+        font-size: 0.7rem;
+        color: var(--text-subtle);
+        margin-top: 0.15rem;
+    }
+    /* Sidebar file uploader gọn lại */
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] {
+        padding: 0;
+    }
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+        padding: 0.7rem;
+    }
+
     /* Sidebar expander (Cài đặt) */
     [data-testid="stSidebar"] [data-testid="stExpander"] {
         border: none;
@@ -702,6 +769,50 @@ with st.sidebar:
                         new_chat()
                     else:
                         st.rerun()
+
+    st.divider()
+
+    # ─── Tài liệu của session ──────────────────────────────────────────────
+    st.markdown('<div class="sidebar-section-label">TÀI LIỆU SESSION</div>', unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "Upload PDF/DOCX/MD/TXT để chat với tài liệu này",
+        type=["pdf", "docx", "md", "markdown", "txt"],
+        key=f"uploader-{st.session_state.session_id}",
+        label_visibility="collapsed",
+    )
+    if uploaded is not None:
+        upload_key = f"uploaded-marker-{st.session_state.session_id}-{uploaded.name}-{uploaded.size}"
+        if not st.session_state.get(upload_key):
+            with st.spinner(f"Đang xử lý {uploaded.name}..."):
+                ok, msg = upload_file_to_session(
+                    st.session_state.api_url, st.session_state.session_id, uploaded,
+                )
+            if ok:
+                st.success(msg)
+                st.session_state[upload_key] = True
+            else:
+                st.error(msg)
+
+    # Danh sách file đã upload trong session hiện tại
+    if api_ok:
+        uploads = fetch_session_uploads(st.session_state.api_url, st.session_state.session_id)
+        for f in uploads:
+            cols = st.columns([0.85, 0.15], gap="small")
+            with cols[0]:
+                st.markdown(
+                    f'<div class="upload-item">📄 {f["filename"]}'
+                    f'<span class="upload-meta">{f.get("chunks", 0)} chunks</span></div>',
+                    unsafe_allow_html=True,
+                )
+            with cols[1]:
+                if st.button("✕", key=f"rmup-{f['doc_id']}", help="Xoá file"):
+                    delete_upload_remote(
+                        st.session_state.api_url,
+                        st.session_state.session_id,
+                        f["doc_id"],
+                    )
+                    st.rerun()
 
     st.divider()
     with st.expander("Cài đặt", expanded=False):

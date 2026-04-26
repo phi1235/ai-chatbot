@@ -146,6 +146,7 @@ def handle_chat(request: ChatRequest) -> ChatResponse:
         input_check.text,
         history=history_before,
         retrieval_query=standalone_query,
+        session_id=session_id,
     )
     timings.update(rag_result.timings)
 
@@ -317,7 +318,7 @@ def handle_chat_stream(request: ChatRequest) -> Iterator[dict[str, Any]]:
     from rag.pipeline import prepare_stream, stream_answer_for
 
     try:
-        setup = prepare_stream(standalone_query)
+        setup = prepare_stream(standalone_query, session_id=session_id)
     except Exception as exc:
         yield {"type": "error", "message": str(exc)}
         return

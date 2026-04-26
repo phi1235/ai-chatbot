@@ -29,6 +29,9 @@ def embed_and_store(chunks: list[dict]) -> None:
             "url": c.get("url", ""),
             "source": c.get("source", "website"),
             "updated_at": c.get("updated_at") or "",
+            # session_id: "" cho global KB, "<id>" cho file user upload trong session.
+            # Cho phép retriever filter chỉ chunks của session đó + global.
+            "session_id": c.get("session_id", "") or "",
         }
         for c in chunks
     ]
@@ -60,6 +63,18 @@ def clear_collection() -> None:
     collection = client.get_or_create_collection(settings.chroma_collection)
     print("Đã xóa toàn bộ dữ liệu trong collection")
     _rebuild_bm25_if_enabled()
+
+
+def delete_session_chunks(session_id: str) -> int:
+    """Xoá tất cả chunks thuộc về 1 session (file upload). Trả về số chunks xoá."""
+    if not session_id:
+        return 0
+    existing = collection.get(where={"session_id": session_id}, include=[])
+    ids = existing.get("ids", []) or []
+    if ids:
+        collection.delete(ids=ids)
+        _rebuild_bm25_if_enabled()
+    return len(ids)
 
 
 def _rebuild_bm25_if_enabled() -> None:

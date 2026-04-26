@@ -66,10 +66,12 @@ def chat_with_trace(
     query: str,
     history: list[dict[str, str]] | None = None,
     retrieval_query: str | None = None,
+    session_id: str | None = None,
 ) -> RagResult:
     """
     `query`: câu hỏi gốc của user (dùng cho LLM cuối)
     `retrieval_query`: câu standalone (nếu khác) dùng cho retrieval. Mặc định = query.
+    `session_id`: nếu session có file upload, ưu tiên chunks của session.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -87,6 +89,7 @@ def chat_with_trace(
         retrieval_q,
         top_k=settings.retrieval_top_k,
         topic=detected_topic,
+        session_id=session_id,
     )
     timings["retrieval_ms"] = round((time.perf_counter() - t1) * 1000, 2)
 
@@ -105,7 +108,7 @@ def chat_with_trace(
     )
 
 
-def prepare_stream(query: str) -> RagStreamSetup:
+def prepare_stream(query: str, session_id: str | None = None) -> RagStreamSetup:
     """Chạy phần retrieval, trả về context để caller stream answer riêng."""
     normalized_query = query.strip()
     if not normalized_query:
@@ -122,6 +125,7 @@ def prepare_stream(query: str) -> RagStreamSetup:
         normalized_query,
         top_k=settings.retrieval_top_k,
         topic=detected_topic,
+        session_id=session_id,
     )
     timings["retrieval_ms"] = round((time.perf_counter() - t1) * 1000, 2)
 

@@ -171,10 +171,22 @@ def infer_topic(query: str) -> str | None:
     return None
 
 
+def _session_has_chunks(session_id: str) -> bool:
+    """Check nhanh: session có chunks upload không?"""
+    if not session_id:
+        return False
+    try:
+        result = collection.get(where={"session_id": session_id}, limit=1, include=[])
+        return bool(result.get("ids"))
+    except Exception:
+        return False
+
+
 def _query_collection(
     normalized_query: str,
     top_k: int,
     topic: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     query_embedding = [_encode_cached(normalized_query)]
     query_kwargs: dict[str, Any] = {
@@ -182,34 +194,65 @@ def _query_collection(
         "n_results": top_k,
         "include": ["documents", "metadatas", "distances"],
     }
-    if topic:
-        query_kwargs["where"] = {"topic": topic}
+    where = _build_where(topic=topic, session_id=session_id)
+    if where:
+        query_kwargs["where"] = where
     return collection.query(**query_kwargs)
 
 
-def _vector_retrieve(query: str, top_k: int, topic: str | None) -> list[dict[str, Any]]:
+def _build_where(
+    topic: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build Chroma where-clause kết hợp topic và session_id filter."""
+    conditions: list[dict[str, Any]] = []
+    if topic:
+        conditions.append({"topic": topic})
+    if session_id is not None:
+        # session_id="" → chỉ global. session_id="<id>" → chỉ session đó.
+        conditions.append({"session_id": session_id})
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
+
+
+def _vector_retrieve(
+    query: str,
+    top_k: int,
+    topic: str | None,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Vector search qua Chroma. Nếu có topic, ưu tiên filter; rỗng thì fallback no-filter."""
     if topic:
-        results = _query_collection(query, top_k=top_k, topic=topic)
+        results = _query_collection(query, top_k=top_k, topic=topic, session_id=session_id)
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
         dists = results.get("distances", [[]])[0]
         if docs:
             return _build_chunks(docs, metas, dists)
 
-    results = _query_collection(query, top_k=top_k, topic=None)
+    results = _query_collection(query, top_k=top_k, topic=None, session_id=session_id)
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
     dists = results.get("distances", [[]])[0]
     return _build_chunks(docs, metas, dists)
 
 
-def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[str, Any]]:
+def retrieve(
+    query: str,
+    top_k: int = 3,
+    topic: str | None = None,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Tìm chunks liên quan nhất.
 
+    Nếu `session_id` truyền vào và session có file upload riêng, ưu tiên
+    chunks của session đó kết hợp với global KB (50/50 trong RRF).
+
     Mặc định dùng hybrid search (BM25 + vector) khi `HYBRID_SEARCH_ENABLED=true`.
-    Tắt env để fallback về vector-only mode.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -225,6 +268,30 @@ def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[
     # Khi reranker bật, lấy nhiều candidates hơn để reranker có lựa chọn.
     # Nếu không có reranker, lấy đúng top_k.
     candidate_k = settings.reranker_fetch_k if settings.reranker_enabled else top_k
+
+    # Session-scoped retrieval: nếu session có file upload, ưu tiên những chunks đó.
+    # Strategy: search session-only riêng, search global riêng, fuse RRF với equal weight.
+    if session_id and _session_has_chunks(session_id):
+        session_chunks = _vector_retrieve(
+            normalized_query, top_k=candidate_k, topic=None, session_id=session_id,
+        )
+        global_chunks = _vector_retrieve(
+            normalized_query, top_k=candidate_k, topic=detected_topic, session_id="",
+        )
+        if session_chunks and global_chunks:
+            from rag.hybrid import rrf_fuse
+            candidates = rrf_fuse([session_chunks, global_chunks], top_k=candidate_k)
+        elif session_chunks:
+            candidates = session_chunks[:candidate_k]
+        elif global_chunks:
+            candidates = global_chunks[:candidate_k]
+        else:
+            raise RetrievalError("Không tìm thấy context phù hợp.")
+
+        if settings.reranker_enabled and len(candidates) > top_k:
+            from rag.reranker import rerank
+            return rerank(normalized_query, candidates, top_k=top_k)
+        return candidates[:top_k]
 
     if settings.hybrid_search_enabled:
         from rag.hybrid import get_index, load_or_build, rrf_fuse
