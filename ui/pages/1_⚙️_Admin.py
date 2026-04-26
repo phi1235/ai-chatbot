@@ -755,12 +755,87 @@ def page_sources():
     st.markdown("&nbsp;")
     st.markdown('<div class="card-title">Topics hiện có</div>', unsafe_allow_html=True)
 
-    topics = get_sources()
-    if not topics:
+    topics_all = get_sources()
+    if not topics_all:
         st.info("Chưa có topic nào. Thêm URL ở form trên để tạo topic mới.")
         return
 
-    for t in topics:
+    # ─── Search + filter ──────────────────────────────────────────────────
+    fcols = st.columns([3, 1, 1])
+    with fcols[0]:
+        search_q = st.text_input(
+            "Tìm topic",
+            placeholder="Nhập tên topic hoặc URL để lọc...",
+            key="topic_search",
+            label_visibility="collapsed",
+        )
+    with fcols[1]:
+        sort_by = st.selectbox(
+            "Sắp xếp",
+            options=["Tên (A→Z)", "Tên (Z→A)", "URLs nhiều nhất", "URLs ít nhất"],
+            label_visibility="collapsed",
+            key="topic_sort",
+        )
+    with fcols[2]:
+        page_size = st.selectbox(
+            "Mỗi trang",
+            options=[5, 10, 20, 50],
+            index=1,
+            label_visibility="collapsed",
+            key="topic_page_size",
+        )
+
+    # Filter
+    q = (search_q or "").strip().lower()
+    if q:
+        def match(t):
+            if q in t["topic"].lower():
+                return True
+            return any(
+                q in (it.get("location") or "").lower()
+                or q in (it.get("title") or "").lower()
+                for it in t.get("items", [])
+            )
+        topics = [t for t in topics_all if match(t)]
+    else:
+        topics = list(topics_all)
+
+    # Sort
+    if sort_by == "Tên (A→Z)":
+        topics.sort(key=lambda t: t["topic"].lower())
+    elif sort_by == "Tên (Z→A)":
+        topics.sort(key=lambda t: t["topic"].lower(), reverse=True)
+    elif sort_by == "URLs nhiều nhất":
+        topics.sort(key=lambda t: t["count"], reverse=True)
+    else:  # URLs ít nhất
+        topics.sort(key=lambda t: t["count"])
+
+    # Pagination
+    total = len(topics)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page_key = "topic_page"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 1
+    # Reset page khi search/sort/page_size đổi
+    state_sig = f"{q}|{sort_by}|{page_size}|{len(topics_all)}"
+    if st.session_state.get("topic_state_sig") != state_sig:
+        st.session_state["topic_state_sig"] = state_sig
+        st.session_state[page_key] = 1
+    current_page = min(st.session_state[page_key], total_pages)
+
+    start = (current_page - 1) * page_size
+    end = start + page_size
+    visible = topics[start:end]
+
+    # Header thông tin filter
+    filter_info = f"{total} / {len(topics_all)} topic" if q else f"{total} topic"
+    st.caption(f"{filter_info} · Trang {current_page}/{total_pages}")
+
+    if not visible:
+        st.info("Không có topic nào khớp filter.")
+        return
+
+    for t in visible:
         with st.expander(f"**{t['topic']}** · {t['count']} URLs", expanded=False):
             cols = st.columns([3, 1])
             with cols[0]:
@@ -827,6 +902,35 @@ def page_sources():
                         if st.button("Xoá", key=f"del-{t['topic']}-{item['location']}", use_container_width=True):
                             if delete_url(t["topic"], item["location"]):
                                 st.rerun()
+
+    # ─── Pagination controls ──────────────────────────────────────────────
+    if total_pages > 1:
+        st.markdown("&nbsp;")
+        pcols = st.columns([1, 1, 3, 1, 1])
+        with pcols[0]:
+            if st.button("« Đầu", disabled=current_page == 1, use_container_width=True, key="pg_first"):
+                st.session_state[page_key] = 1
+                st.rerun()
+        with pcols[1]:
+            if st.button("‹ Trước", disabled=current_page == 1, use_container_width=True, key="pg_prev"):
+                st.session_state[page_key] = current_page - 1
+                st.rerun()
+        with pcols[2]:
+            jump = st.number_input(
+                "Trang", min_value=1, max_value=total_pages, value=current_page,
+                step=1, label_visibility="collapsed", key="pg_jump",
+            )
+            if jump != current_page:
+                st.session_state[page_key] = int(jump)
+                st.rerun()
+        with pcols[3]:
+            if st.button("Sau ›", disabled=current_page >= total_pages, use_container_width=True, key="pg_next"):
+                st.session_state[page_key] = current_page + 1
+                st.rerun()
+        with pcols[4]:
+            if st.button("Cuối »", disabled=current_page >= total_pages, use_container_width=True, key="pg_last"):
+                st.session_state[page_key] = total_pages
+                st.rerun()
 
 
 # ─── Page: Health Check ─────────────────────────────────────────────────────
