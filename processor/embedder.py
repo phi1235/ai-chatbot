@@ -1,49 +1,77 @@
+from __future__ import annotations
+
 import chromadb
 from sentence_transformers import SentenceTransformer
 
-# Model nhẹ, chạy local hoàn toàn, miễn phí
-model = SentenceTransformer("all-MiniLM-L6-v2")
+from config.settings import settings
 
-# Kết nối ChromaDB local
-client = chromadb.PersistentClient(path="./db/chroma_store")
-collection = client.get_or_create_collection("ai_knowledge")
+model = SentenceTransformer(settings.embedding_model)
+client = chromadb.PersistentClient(path=settings.chroma_path)
+collection = client.get_or_create_collection(settings.chroma_collection)
 
-def embed_and_store(chunks: list[dict]):
+
+def embed_and_store(chunks: list[dict]) -> None:
     """
-    Embed các chunks và lưu vào ChromaDB
-    
-    Args:
-        chunks: List các chunks với format {"id": str, "text": str, "metadata": dict}
+    Embed các chunks chuẩn hóa và lưu vào ChromaDB.
     """
-    texts = [c["text"] for c in chunks]
-    ids = [c["id"] for c in chunks]
-    metadatas = [c["metadata"] for c in chunks]
+    if not chunks:
+        print("Không có chunk nào để embed.")
+        return
 
-    # Embed toàn bộ (batch cho nhanh)
+    texts = [c["content"] for c in chunks]
+    ids = [c["chunk_id"] for c in chunks]
+    metadatas = [
+        {
+            "doc_id": c["doc_id"],
+            "title": c["title"],
+            "section": c.get("section", ""),
+            "topic": c.get("topic", "general"),
+            "url": c.get("url", ""),
+            "source": c.get("source", "website"),
+            "updated_at": c.get("updated_at") or "",
+        }
+        for c in chunks
+    ]
+
     embeddings = model.encode(texts).tolist()
+    existing = set(collection.get(ids=ids, include=[]).get("ids", []))
+    new_payload = [
+        (chunk_id, text, metadata, embedding)
+        for chunk_id, text, metadata, embedding in zip(ids, texts, metadatas, embeddings)
+        if chunk_id not in existing
+    ]
+    if not new_payload:
+        print("Không có chunk mới để lưu vào ChromaDB.")
+        return
 
     collection.add(
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=metadatas,
-        ids=ids
+        ids=[item[0] for item in new_payload],
+        documents=[item[1] for item in new_payload],
+        metadatas=[item[2] for item in new_payload],
+        embeddings=[item[3] for item in new_payload],
     )
-    print(f"Đã lưu {len(chunks)} chunks vào ChromaDB")
+    print(f"Đã lưu {len(new_payload)} chunks vào ChromaDB")
 
-def clear_collection():
-    """Xóa toàn bộ dữ liệu trong collection"""
+
+def clear_collection() -> None:
     global collection
-    client.delete_collection("ai_knowledge")
-    collection = client.get_or_create_collection("ai_knowledge")
+    client.delete_collection(settings.chroma_collection)
+    collection = client.get_or_create_collection(settings.chroma_collection)
     print("Đã xóa toàn bộ dữ liệu trong collection")
 
+
 if __name__ == "__main__":
-    # Test embedding
     sample_chunks = [
         {
-            "id": "test_1",
-            "text": "Python is a programming language",
-            "metadata": {"topic": "Python", "chunk_index": 0}
+            "chunk_id": "doc-001-chunk-01",
+            "doc_id": "doc-001",
+            "title": "Refund policy",
+            "section": "Eligibility",
+            "content": "Customers can request a refund within 30 days of purchase.",
+            "topic": "policy",
+            "url": "https://example.com/refund",
+            "source": "website",
+            "updated_at": "2026-04-22",
         }
     ]
     embed_and_store(sample_chunks)

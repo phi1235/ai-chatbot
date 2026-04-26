@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 # Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -22,20 +24,10 @@ else
     source venv/bin/activate
 fi
 
-# Check if .env exists and has API key
-if [ ! -f ".env" ]; then
-    echo -e "${RED}❌ .env file not found!${NC}"
-    echo "Please create .env file with your GEMINI_API_KEY"
-    exit 1
-fi
+# Check if ChromaDB collection has data
+COLLECTION_COUNT=$(python -c "import chromadb; c=chromadb.PersistentClient(path='./db/chroma_store'); col=c.get_or_create_collection('ai_knowledge'); print(col.count())")
 
-if ! grep -q "GEMINI_API_KEY=AIza" .env; then
-    echo -e "${RED}⚠️  Warning: GEMINI_API_KEY might not be configured properly${NC}"
-    echo "Please update .env file with your actual API key"
-fi
-
-# Check if ChromaDB has data
-if [ ! -d "db/chroma_store" ] || [ -z "$(ls -A db/chroma_store)" ]; then
+if [ "${COLLECTION_COUNT}" -eq 0 ]; then
     echo -e "${BLUE}📦 No data found. Running setup_sample_data.py...${NC}"
     python setup_sample_data.py
     echo ""
@@ -47,7 +39,7 @@ echo "1) Run Backend API (port 8000)"
 echo "2) Run Streamlit UI (port 8501)"
 echo "3) Run Both (in background)"
 echo "4) Setup Sample Data"
-echo "5) Test RAG Pipeline"
+echo "5) Test RAG Pipeline (requires Ollama)"
 echo "6) Exit"
 echo ""
 read -p "Enter choice [1-6]: " choice

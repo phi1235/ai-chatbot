@@ -1,4 +1,4 @@
-# 🚀 Quick Start Guide
+# Quick Start Guide
 
 ## Bước 1: Setup môi trường (5 phút)
 
@@ -13,14 +13,15 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Bước 2: Cấu hình Gemini API (2 phút)
+## Bước 2: Cấu hình OpenRouter API (2 phút)
 
-1. Truy cập https://aistudio.google.com
-2. Đăng nhập và tạo API key
+1. Tạo API key OpenRouter
+2. Copy `.env.example` thành `.env`
 3. Cập nhật file `.env`:
 
 ```env
-GEMINI_API_KEY=AIzaSy...your_actual_key_here
+OPENROUTER_API_KEY=sk-or-...your_actual_key_here
+OPENROUTER_MODEL=openrouter/free
 ```
 
 ## Bước 3: Setup sample data (1 phút)
@@ -31,10 +32,10 @@ python setup_sample_data.py
 
 Output:
 ```
-🔄 Đang xử lý sample data...
-✅ Đã tạo 15 chunks
-✅ Đã lưu vào ChromaDB
-🎉 Setup hoàn tất!
+ Đang xử lý sample data...
+ Đã tạo 15 chunks
+ Đã lưu vào ChromaDB
+ Setup hoàn tất!
 ```
 
 ## Bước 4: Chạy ứng dụng (2 phút)
@@ -62,10 +63,10 @@ Chỉnh sửa `setup_sample_data.py` và thêm documents:
 
 ```python
 sample_docs = [
-    {
-        "topic": "Your Topic",
-        "content": "Your content here..."
-    }
+ {
+ "topic": "Your Topic",
+ "content": "Your content here..."
+ }
 ]
 ```
 
@@ -81,7 +82,7 @@ python setup_sample_data.py
 pip install -r requirements.txt
 ```
 
-### Lỗi "GEMINI_API_KEY not found"
+### Lỗi "OPENROUTER_API_KEY not found"
 Kiểm tra file `.env` có đúng format và API key hợp lệ.
 
 ### Lỗi khi chạy API
@@ -91,8 +92,8 @@ Kiểm tra file `.env` có đúng format và API key hợp lệ.
 
 1. Tùy chỉnh prompt trong `rag/generator.py`
 2. Điều chỉnh chunk_size và overlap trong `processor/chunker.py`
-3. Thay đổi số lượng context chunks trong `rag/pipeline.py`
-4. Thêm logging và error handling
+3. Thay đổi số lượng context chunks bằng `RETRIEVAL_TOP_K`
+4. Đọc `ARCHITECTURE.md` để hiểu gateway, orchestrator, guardrails, metrics
 5. Deploy lên VPS
 
-Chúc bạn thành công! 🎉
+Chúc bạn thành công!

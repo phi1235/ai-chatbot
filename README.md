@@ -1,17 +1,26 @@
 # AI Chatbot Agent
 
-> **Stack:** Python · ChromaDB · Gemini API · Streamlit · FastAPI  
+> **Stack:** Python · ChromaDB · OpenRouter API · Streamlit · FastAPI
 > **Môi trường:** Ubuntu (local laptop)
 
 ## Tổng quan
 
-Chatbot AI sử dụng RAG (Retrieval-Augmented Generation) để trả lời câu hỏi dựa trên dữ liệu đã crawl.
+Chatbot AI sử dụng RAG (Retrieval-Augmented Generation) để trả lời câu hỏi dựa trên dữ liệu đã crawl, có API gateway, orchestrator, guardrails, citations, trace và metrics local.
 
 ```
 [AI API] → crawl → chunking → embedding → ChromaDB
-                                              ↓
-[User] → Streamlit UI → FastAPI → vector search → Gemini API → trả lời
+ ↓
+[User] → Streamlit UI → API Gateway → Orchestrator → Guardrails → vector search → OpenRouter API → trả lời
 ```
+
+## Lưu ý khi clone repo
+
+Repo này **không kèm sẵn data** (`data/raw/`, `data/clean/`, `db/`) vì:
+- Tránh vi phạm copyright của các nguồn được crawl (react.dev, kubernetes.io, postgres.org…)
+- Tránh lộ lịch sử hội thoại cá nhân
+- Giữ repo nhẹ
+
+Sau khi clone, bạn cần tự `python ingest.py --reset` để crawl + index dữ liệu vào ChromaDB local của mình. Có thể chỉnh sửa `sources/*.json` để chọn nguồn riêng.
 
 ## Cài đặt
 
@@ -30,33 +39,37 @@ pip install -r requirements.txt
 
 ### 3. Cấu hình API key
 
-Lấy Gemini API key từ https://aistudio.google.com và cập nhật file `.env`:
+Copy `.env.example` thành `.env` rồi cập nhật OpenRouter API key:
 
 ```env
-GEMINI_API_KEY=your_actual_api_key_here
+OPENROUTER_API_KEY=your_actual_api_key_here
+OPENROUTER_MODEL=openrouter/free
 ```
 
 ## Cấu trúc project
 
 ```
 ai-chatbot/
-├── .env                    # API keys
-├── requirements.txt        # Dependencies
+├── .env # API keys
+├── requirements.txt # Dependencies
 ├── crawler/
-│   └── fetch_data.py      # Crawl data từ AI API
+│ └── fetch_data.py # Crawl data từ AI API
 ├── processor/
-│   ├── chunker.py         # Chia nhỏ text
-│   └── embedder.py        # Embed và lưu ChromaDB
+│ ├── chunker.py # Chia nhỏ text
+│ └── embedder.py # Embed và lưu ChromaDB
 ├── rag/
-│   ├── retriever.py       # Tìm kiếm vector
-│   ├── generator.py       # Gọi Gemini API
-│   └── pipeline.py        # RAG pipeline
+│ ├── retriever.py # Tìm kiếm vector
+│ ├── generator.py # Gọi OpenRouter API
+│ └── pipeline.py # RAG pipeline
 ├── api/
-│   └── main.py            # FastAPI backend
+│ └── main.py # API gateway, health, metrics
+├── orchestrator/ # Agent layer, memory, rate limit
+├── guardrails/ # Input/output safety checks
+├── observability/ # Local logging & metrics
 ├── ui/
-│   └── app.py             # Streamlit chat UI
+│ └── app.py # Streamlit chat UI
 └── db/
-    └── chroma_store/      # ChromaDB local storage
+ └── chroma_store/ # ChromaDB local storage
 ```
 
 ## Sử dụng
@@ -135,19 +148,19 @@ python rag/pipeline.py
 - **Chunk quá lớn (>1000)**: Chậm → Giảm `chunk_size` xuống 400
 - **Overlap không đủ**: Câu trả lời bị cắt → Tăng `overlap` lên 100
 
-### Prompt Gemini
+### Prompt OpenRouter
 
 Chỉnh sửa prompt trong `rag/generator.py` để cải thiện chất lượng câu trả lời.
 
 ## Lưu ý
 
-- **Gemini free tier**: 15 requests/phút, 1 triệu tokens/ngày
+- **OpenRouter**: Model và quota phụ thuộc cấu hình `OPENROUTER_MODEL`
 - **ChromaDB**: Dữ liệu lưu local tại `./db/chroma_store/`
 - **Sentence-transformers**: Lần đầu chạy sẽ download model (~90MB)
 
 ## Troubleshooting
 
-### Lỗi "GEMINI_API_KEY not found"
+### Lỗi "OPENROUTER_API_KEY not found"
 
 Kiểm tra file `.env` và đảm bảo API key đúng.
 

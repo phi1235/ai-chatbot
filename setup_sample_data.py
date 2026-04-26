@@ -1,53 +1,88 @@
 """
-Script để tạo sample data và test toàn bộ pipeline
+Script tạo sample data theo format document chuẩn để test pipeline local RAG.
 """
 from processor.chunker import process_documents
-from processor.embedder import embed_and_store
+from processor.embedder import clear_collection, embed_and_store
 
-# Sample data thay vì crawl từ API
 sample_docs = [
     {
-        "topic": "Python",
-        "content": """Python là ngôn ngữ lập trình bậc cao, được thiết kế với triết lý 
-        code dễ đọc và dễ viết. Python hỗ trợ nhiều paradigm lập trình như OOP, functional 
-        programming, và procedural programming. Python được sử dụng rộng rãi trong web 
-        development, data science, machine learning, automation, và nhiều lĩnh vực khác. 
-        Python có cú pháp đơn giản, thư viện phong phú, và cộng đồng developer lớn."""
+        "id": "doc-python-001",
+        "title": "Tổng quan Python",
+        "url": "https://example.local/python-overview",
+        "content": """
+Tổng quan Python
+
+Python là ngôn ngữ lập trình bậc cao, cú pháp rõ ràng và dễ đọc. Ngôn ngữ này được dùng rộng rãi trong tự động hóa, backend, khoa học dữ liệu và AI.
+
+Ứng dụng chính
+
+Python phù hợp cho scripting, web development, data analysis, machine learning và tích hợp hệ thống. Hệ sinh thái thư viện lớn là lý do Python thường được chọn để phát triển nhanh.
+
+Ưu điểm
+
+Python có cộng đồng lớn, tài liệu nhiều và tốc độ học nhanh. Điểm cần lưu ý là hiệu năng raw thường không bằng các ngôn ngữ biên dịch như C++ hoặc Rust.
+""".strip(),
+        "source": "sample",
+        "updated_at": "2026-04-22",
+        "topic": "engineering",
     },
     {
-        "topic": "Machine Learning",
-        "content": """Machine Learning là một nhánh của AI, cho phép máy tính học từ dữ liệu 
-        mà không cần lập trình cụ thể. Có 3 loại chính: supervised learning (học có giám sát), 
-        unsupervised learning (học không giám sát), và reinforcement learning (học tăng cường). 
-        Machine Learning được ứng dụng trong nhận dạng hình ảnh, xử lý ngôn ngữ tự nhiên, 
-        recommendation systems, và nhiều lĩnh vực khác. Các thuật toán phổ biến bao gồm 
-        linear regression, decision trees, neural networks, và SVM."""
+        "id": "doc-ml-001",
+        "title": "Khái niệm Machine Learning",
+        "url": "https://example.local/ml-basics",
+        "content": """
+Khái niệm Machine Learning
+
+Machine Learning là nhánh của AI cho phép hệ thống học từ dữ liệu thay vì lập trình cứng toàn bộ luật xử lý.
+
+Nhóm bài toán
+
+Ba nhóm phổ biến là supervised learning, unsupervised learning và reinforcement learning. Mỗi nhóm phù hợp với kiểu dữ liệu và mục tiêu khác nhau.
+
+Ứng dụng
+
+Machine Learning được ứng dụng trong phân loại văn bản, gợi ý sản phẩm, phát hiện gian lận và dự báo nhu cầu.
+""".strip(),
+        "source": "sample",
+        "updated_at": "2026-04-22",
+        "topic": "ai",
     },
     {
-        "topic": "Web Development",
-        "content": """Web Development là quá trình xây dựng website và web application. 
-        Gồm 2 phần chính: Frontend (giao diện người dùng) sử dụng HTML, CSS, JavaScript, 
-        và Backend (server-side) sử dụng Python, Node.js, Java, PHP. Modern web development 
-        sử dụng frameworks như React, Vue, Angular cho frontend và Django, Flask, Express 
-        cho backend. RESTful API và GraphQL là các cách phổ biến để frontend và backend 
-        giao tiếp với nhau."""
-    }
+        "id": "doc-policy-001",
+        "title": "Chính sách hoàn tiền",
+        "url": "https://example.local/refund-policy",
+        "content": """
+Chính sách hoàn tiền
+
+Điều kiện áp dụng
+
+Khách hàng được yêu cầu hoàn tiền trong vòng 30 ngày kể từ ngày thanh toán nếu dịch vụ chưa được sử dụng vượt quá giới hạn cho phép theo hợp đồng.
+
+Hồ sơ cần có
+
+Yêu cầu hoàn tiền cần kèm mã đơn hàng, thông tin liên hệ và lý do đề nghị hoàn tiền để bộ phận hỗ trợ đối chiếu.
+
+Ngoại lệ
+
+Các gói dùng thử miễn phí, dịch vụ đã kích hoạt không thể hoàn lại và các khoản phí tích hợp của bên thứ ba không thuộc phạm vi hoàn tiền.
+""".strip(),
+        "source": "sample",
+        "updated_at": "2026-04-22",
+        "topic": "policy",
+    },
 ]
 
-def setup_sample_data():
-    """Tạo sample data và lưu vào ChromaDB"""
-    print("🔄 Đang xử lý sample data...")
-    
-    # Chunk documents
+
+def setup_sample_data() -> None:
+    print("Đang xử lý sample data...")
+    clear_collection()
     chunks = process_documents(sample_docs)
-    print(f"✅ Đã tạo {len(chunks)} chunks")
-    
-    # Embed và lưu vào ChromaDB
+    print(f"Đã tạo {len(chunks)} chunks")
     embed_and_store(chunks)
-    print("✅ Đã lưu vào ChromaDB")
-    print("\n🎉 Setup hoàn tất! Bây giờ bạn có thể:")
-    print("   1. Chạy API: uvicorn api.main:app --reload --port 8000")
-    print("   2. Chạy UI: streamlit run ui/app.py")
+    print("Đã lưu sample data vào ChromaDB")
+    print("Chạy API: uvicorn api.main:app --reload --port 8000")
+    print("Chạy UI: streamlit run ui/app.py")
+
 
 if __name__ == "__main__":
     setup_sample_data()
