@@ -884,24 +884,115 @@ def page_sources():
                             if added or errors:
                                 st.rerun()
 
-            # Danh sách URL đã có
+            # Danh sách URL đã có với checkbox để chọn re-crawl
             if not t["items"]:
                 st.caption("(rỗng)")
             else:
+                topic = t["topic"]
+                sel_state_key = f"sel_urls_{topic}"
+                if sel_state_key not in st.session_state:
+                    st.session_state[sel_state_key] = set()
+                selected: set = st.session_state[sel_state_key]
+
+                # Toolbar: chọn tất cả + re-crawl selected
+                tcols = st.columns([2, 2, 2, 1])
+                with tcols[0]:
+                    if st.button(
+                        "Chọn tất cả",
+                        key=f"selall-{topic}",
+                        use_container_width=True,
+                        disabled=len(selected) == len(t["items"]),
+                    ):
+                        st.session_state[sel_state_key] = {it["location"] for it in t["items"]}
+                        st.rerun()
+                with tcols[1]:
+                    if st.button(
+                        "Bỏ chọn",
+                        key=f"selnone-{topic}",
+                        use_container_width=True,
+                        disabled=len(selected) == 0,
+                    ):
+                        st.session_state[sel_state_key] = set()
+                        st.rerun()
+                with tcols[2]:
+                    if st.button(
+                        f"Re-crawl đã chọn ({len(selected)})",
+                        key=f"recrawl-sel-{topic}",
+                        use_container_width=True,
+                        disabled=len(selected) == 0,
+                        type="primary",
+                    ):
+                        urls_to_crawl = [
+                            {
+                                "location": it["location"],
+                                "topic": topic,
+                                "title": it.get("title", it["location"]),
+                                "source": it.get("source", "website"),
+                            }
+                            for it in t["items"]
+                            if it["location"] in selected
+                        ]
+                        with st.spinner(f"Re-crawl {len(urls_to_crawl)} URLs..."):
+                            res = trigger_ingest(urls=urls_to_crawl)
+                        if res:
+                            st.success(
+                                f"{res['documents_crawled']} docs, "
+                                f"{res['chunks_indexed']} chunks"
+                            )
+                            st.session_state[sel_state_key] = set()
+
+                # List URLs với checkbox per row
                 for item in t["items"]:
-                    url_cols = st.columns([5, 1])
-                    with url_cols[0]:
+                    loc = item["location"]
+                    row = st.columns([0.5, 4.5, 1])
+                    with row[0]:
+                        checked = st.checkbox(
+                            "Sel",
+                            value=loc in selected,
+                            key=f"chk-{topic}-{loc}",
+                            label_visibility="collapsed",
+                        )
+                        # Sync selection state
+                        if checked and loc not in selected:
+                            selected.add(loc)
+                        elif not checked and loc in selected:
+                            selected.discard(loc)
+                    with row[1]:
                         st.markdown(
                             f'<div class="url-item">'
-                            f'<div class="url-title">{item.get("title", item["location"])}</div>'
-                            f'<div class="url-link">{item["location"]}</div>'
+                            f'<div class="url-title">{item.get("title", loc)}</div>'
+                            f'<div class="url-link">{loc}</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                    with url_cols[1]:
-                        if st.button("Xoá", key=f"del-{t['topic']}-{item['location']}", use_container_width=True):
-                            if delete_url(t["topic"], item["location"]):
-                                st.rerun()
+                    with row[2]:
+                        rcols = st.columns(2, gap="small")
+                        with rcols[0]:
+                            if st.button(
+                                "↻",
+                                key=f"recrawl-one-{topic}-{loc}",
+                                help="Re-crawl URL này",
+                                use_container_width=True,
+                            ):
+                                with st.spinner(f"Re-crawl {loc[:50]}..."):
+                                    res = trigger_ingest(urls=[{
+                                        "location": loc,
+                                        "topic": topic,
+                                        "title": item.get("title", loc),
+                                        "source": item.get("source", "website"),
+                                    }])
+                                if res:
+                                    st.success(f"{res['chunks_indexed']} chunks")
+                        with rcols[1]:
+                            if st.button(
+                                "✕",
+                                key=f"del-{topic}-{loc}",
+                                help="Xoá URL khỏi sources",
+                                use_container_width=True,
+                            ):
+                                if delete_url(topic, loc):
+                                    selected.discard(loc)
+                                    st.rerun()
 
     # ─── Pagination controls ──────────────────────────────────────────────
     if total_pages > 1:
@@ -999,25 +1090,96 @@ def page_health():
     if show_unknown:
         wanted.add("UNKNOWN")
 
-    rows_html = "".join(status_row_html(r) for r in result["results"] if r["status"] in wanted)
-    if rows_html:
-        st.markdown(rows_html, unsafe_allow_html=True)
-    else:
+    visible_rows = [r for r in result["results"] if r["status"] in wanted]
+    if not visible_rows:
         st.caption("(không có entry nào với filter hiện tại)")
+        return
 
-    stale_urls = [r for r in result["results"] if r["status"] == "STALE"]
-    if stale_urls:
-        st.markdown("&nbsp;")
-        st.warning(f"Có {len(stale_urls)} URL stale — content đã thay đổi.")
-        if st.button("Re-ingest tất cả URL stale", type="primary"):
+    # Selection state cho Health rows
+    health_sel_key = "health_selected_urls"
+    if health_sel_key not in st.session_state:
+        st.session_state[health_sel_key] = set()
+    health_selected: set = st.session_state[health_sel_key]
+
+    # Toolbar trên list: chọn tất cả stale, bỏ chọn, re-crawl đã chọn
+    actionable = [r for r in visible_rows if r["status"] in ("STALE", "REDIRECT", "DEAD")]
+    tcols = st.columns([2, 2, 2, 1])
+    with tcols[0]:
+        if st.button(
+            f"Chọn tất cả STALE ({sum(1 for r in actionable if r['status'] == 'STALE')})",
+            use_container_width=True,
+            key="health_sel_stale",
+            disabled=not any(r["status"] == "STALE" for r in actionable),
+        ):
+            st.session_state[health_sel_key] = {
+                r["location"] for r in actionable if r["status"] == "STALE"
+            }
+            st.rerun()
+    with tcols[1]:
+        if st.button(
+            "Bỏ chọn tất cả",
+            use_container_width=True,
+            key="health_sel_none",
+            disabled=len(health_selected) == 0,
+        ):
+            st.session_state[health_sel_key] = set()
+            st.rerun()
+    with tcols[2]:
+        if st.button(
+            f"Re-crawl đã chọn ({len(health_selected)})",
+            type="primary",
+            use_container_width=True,
+            key="health_recrawl_selected",
+            disabled=len(health_selected) == 0,
+        ):
             urls_to_update = [
                 {"location": r["location"], "topic": r["topic"], "title": r["title"], "source": "website"}
-                for r in stale_urls
+                for r in result["results"]
+                if r["location"] in health_selected
             ]
-            with st.spinner("Đang re-crawl + re-embed..."):
+            with st.spinner(f"Re-crawl {len(urls_to_update)} URLs..."):
                 res = trigger_ingest(urls=urls_to_update)
             if res:
                 st.success(f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
+                st.session_state[health_sel_key] = set()
+
+    # Render từng row: STALE/REDIRECT/DEAD có checkbox + nút re-crawl đơn lẻ;
+    # OK/UNKNOWN chỉ hiển thị
+    for r in visible_rows:
+        loc = r["location"]
+        is_actionable = r["status"] in ("STALE", "REDIRECT", "DEAD")
+        if is_actionable:
+            cols = st.columns([0.4, 6, 0.6])
+            with cols[0]:
+                checked = st.checkbox(
+                    "Sel",
+                    value=loc in health_selected,
+                    key=f"hchk-{loc}",
+                    label_visibility="collapsed",
+                )
+                if checked and loc not in health_selected:
+                    health_selected.add(loc)
+                elif not checked and loc in health_selected:
+                    health_selected.discard(loc)
+            with cols[1]:
+                st.markdown(status_row_html(r), unsafe_allow_html=True)
+            with cols[2]:
+                if st.button(
+                    "↻",
+                    key=f"hrec-{loc}",
+                    help="Re-crawl URL này",
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Re-crawl {loc[:50]}..."):
+                        res = trigger_ingest(urls=[{
+                            "location": loc, "topic": r["topic"],
+                            "title": r["title"], "source": "website",
+                        }])
+                    if res:
+                        st.success(f"{res['chunks_indexed']} chunks")
+        else:
+            # OK / UNKNOWN: chỉ hiển thị, không cần action
+            st.markdown(status_row_html(r), unsafe_allow_html=True)
 
 
 # ─── Page: Sessions ─────────────────────────────────────────────────────────
