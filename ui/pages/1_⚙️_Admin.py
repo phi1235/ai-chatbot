@@ -613,6 +613,58 @@ def page_dashboard():
         )
 
 
+# ─── Helpers cho multi-URL input ────────────────────────────────────────────
+def parse_url_lines(text: str) -> list[tuple[str, str]]:
+    """Parse textarea: mỗi dòng 1 URL.
+
+    Format hỗ trợ:
+        https://example.com/page
+        https://example.com/page | Tiêu đề tuỳ chỉnh
+        # comment - bỏ qua
+
+    Trả về list[(url, title)]. Title rỗng nếu không có "|".
+    """
+    out: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "|" in line:
+            url, title = (s.strip() for s in line.split("|", 1))
+        else:
+            url, title = line, ""
+        if url:
+            out.append((url, title))
+    return out
+
+
+def bulk_add_urls(
+    topic: str, url_lines: list[tuple[str, str]], crawl_after: bool,
+) -> tuple[int, int, list[str]]:
+    """Thêm nhiều URL vào 1 topic. Trả về (added, skipped, errors)."""
+    added = 0
+    skipped = 0
+    errors: list[str] = []
+    for url, title in url_lines:
+        ok, msg = add_url(topic, url, title)
+        if ok:
+            added += 1
+        elif "đã tồn tại" in msg.lower() or "already" in msg.lower():
+            skipped += 1
+        else:
+            errors.append(f"{url}: {msg}")
+
+    if crawl_after and added > 0:
+        with st.spinner(f"Đang crawl + index {topic}..."):
+            res = trigger_ingest(topic=topic)
+        if res:
+            st.info(
+                f"Đã crawl: {res['documents_crawled']} docs, "
+                f"{res['chunks_indexed']} chunks"
+            )
+    return added, skipped, errors
+
+
 # ─── Page: Sources ──────────────────────────────────────────────────────────
 def page_sources():
     render_page_header(
@@ -620,41 +672,85 @@ def page_sources():
         "Quản lý nguồn dữ liệu được crawl vào knowledge base",
     )
 
-    col_left, col_right = st.columns([1, 1], gap="medium")
-
-    with col_left:
-        st.markdown('<div class="card-title">Thêm URL mới</div>', unsafe_allow_html=True)
-        with st.form("add_url_form", clear_on_submit=True):
-            new_topic = st.text_input("Topic", placeholder="vd: kubernetes, react, fastapi")
-            new_url = st.text_input("URL", placeholder="https://docs.example.com/page")
-            new_title = st.text_input("Title (tùy chọn)", placeholder="Để trống dùng URL")
-            submit = st.form_submit_button("Thêm vào sources", type="primary", use_container_width=True)
-            if submit:
-                if not new_topic or not new_url:
-                    st.error("Cần điền topic và URL.")
+    # ─── Form: Thêm topic + nhiều URL ──────────────────────────────────────
+    st.markdown('<div class="card-title">Thêm topic mới (hoặc thêm vào topic có sẵn)</div>', unsafe_allow_html=True)
+    with st.form("add_topic_form", clear_on_submit=True):
+        new_topic = st.text_input(
+            "Tên topic", placeholder="vd: kubernetes, react, fastapi",
+        )
+        url_block = st.text_area(
+            "Danh sách URL (mỗi dòng 1 URL)",
+            placeholder=(
+                "https://docs.example.com/page-1\n"
+                "https://docs.example.com/page-2 | Tiêu đề tuỳ chỉnh\n"
+                "# Dòng bắt đầu '#' sẽ bị bỏ qua\n"
+                "https://docs.example.com/page-3"
+            ),
+            height=150,
+            help='Format: "URL" hoặc "URL | Title". Comment bằng "#".',
+        )
+        bcols = st.columns([2, 1])
+        with bcols[0]:
+            crawl_after_add = st.checkbox(
+                "Crawl + index ngay sau khi thêm", value=True,
+                help="Tự động re-crawl toàn bộ topic ngay sau khi thêm xong.",
+            )
+        with bcols[1]:
+            submit = st.form_submit_button(
+                "Thêm vào sources", type="primary", use_container_width=True,
+            )
+        if submit:
+            topic_clean = (new_topic or "").strip()
+            url_lines = parse_url_lines(url_block or "")
+            if not topic_clean:
+                st.error("Cần nhập tên topic.")
+            elif not url_lines:
+                st.error("Cần ít nhất 1 URL.")
+            else:
+                added, skipped, errors = bulk_add_urls(
+                    topic_clean, url_lines, crawl_after_add,
+                )
+                msg_parts = []
+                if added:
+                    msg_parts.append(f"thêm {added}")
+                if skipped:
+                    msg_parts.append(f"đã có {skipped}")
+                if errors:
+                    msg_parts.append(f"lỗi {len(errors)}")
+                summary = " · ".join(msg_parts) or "không có thay đổi"
+                if errors:
+                    st.warning(f"{summary}")
+                    with st.expander("Chi tiết lỗi"):
+                        for e in errors:
+                            st.text(f"- {e}")
                 else:
-                    ok, msg = add_url(new_topic.strip(), new_url.strip(), new_title.strip())
-                    (st.success if ok else st.error)(msg)
+                    st.success(summary)
 
-    with col_right:
-        st.markdown('<div class="card-title">Crawl ad-hoc</div>', unsafe_allow_html=True)
-        st.caption("Crawl 1 URL ngay không cần lưu vào sources file.")
-        with st.form("adhoc_crawl"):
-            adhoc_topic = st.text_input("Topic", value="general", key="adhoc_topic")
-            adhoc_url = st.text_input("URL", placeholder="https://...", key="adhoc_url")
+    st.markdown("&nbsp;")
+    st.markdown('<div class="card-title">Crawl ad-hoc (không lưu vào sources file)</div>', unsafe_allow_html=True)
+    with st.form("adhoc_crawl"):
+        c = st.columns([1, 3, 1])
+        with c[0]:
+            adhoc_topic = st.text_input(
+                "Topic", value="general", key="adhoc_topic", label_visibility="collapsed",
+                placeholder="topic",
+            )
+        with c[1]:
+            adhoc_url = st.text_input(
+                "URL", placeholder="https://...", key="adhoc_url", label_visibility="collapsed",
+            )
+        with c[2]:
             adhoc_submit = st.form_submit_button("Crawl ngay", use_container_width=True)
-            if adhoc_submit and adhoc_url:
-                with st.spinner("Đang crawl + index..."):
-                    res = trigger_ingest(urls=[{
-                        "location": adhoc_url.strip(),
-                        "topic": adhoc_topic.strip() or "general",
-                        "title": adhoc_url.strip(),
-                        "source": "website",
-                    }])
-                if res:
-                    st.success(
-                        f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks"
-                    )
+        if adhoc_submit and adhoc_url:
+            with st.spinner("Đang crawl + index..."):
+                res = trigger_ingest(urls=[{
+                    "location": adhoc_url.strip(),
+                    "topic": adhoc_topic.strip() or "general",
+                    "title": adhoc_url.strip(),
+                    "source": "website",
+                }])
+            if res:
+                st.success(f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
 
     st.markdown("&nbsp;")
     st.markdown('<div class="card-title">Topics hiện có</div>', unsafe_allow_html=True)
@@ -676,6 +772,44 @@ def page_sources():
                     if res:
                         st.success(f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
 
+            # Form thêm URL vào topic hiện tại
+            with st.form(f"add_to_{t['topic']}", clear_on_submit=True):
+                st.caption(f"Thêm URL vào topic `{t['topic']}` (mỗi dòng 1 URL):")
+                more_urls = st.text_area(
+                    "URLs",
+                    placeholder="https://...\nhttps://... | Title",
+                    height=100,
+                    key=f"more-{t['topic']}",
+                    label_visibility="collapsed",
+                )
+                ac = st.columns([2, 1])
+                with ac[0]:
+                    crawl_now = st.checkbox(
+                        "Crawl ngay sau khi thêm", value=True,
+                        key=f"crawl-now-{t['topic']}",
+                    )
+                with ac[1]:
+                    if st.form_submit_button("Thêm", use_container_width=True):
+                        url_lines = parse_url_lines(more_urls or "")
+                        if not url_lines:
+                            st.error("Chưa nhập URL nào.")
+                        else:
+                            added, skipped, errors = bulk_add_urls(
+                                t["topic"], url_lines, crawl_now,
+                            )
+                            if added:
+                                st.success(f"Thêm {added} URLs vào {t['topic']}")
+                            if skipped:
+                                st.info(f"{skipped} URLs đã có sẵn (bỏ qua)")
+                            if errors:
+                                st.warning(f"{len(errors)} URLs lỗi")
+                                with st.expander("Chi tiết"):
+                                    for e in errors:
+                                        st.text(f"- {e}")
+                            if added or errors:
+                                st.rerun()
+
+            # Danh sách URL đã có
             if not t["items"]:
                 st.caption("(rỗng)")
             else:
