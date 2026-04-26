@@ -192,15 +192,29 @@ st.markdown(
         height: auto;
     }
 
-    /* Sidebar - dạng admin nav */
+    /* Sidebar - dạng admin nav, FORCE always visible */
     [data-testid="stSidebar"] {
         background: var(--surface);
         border-right: 1px solid var(--border);
         min-width: 260px !important;
         max-width: 280px !important;
+        width: 260px !important;
+        transform: translateX(0) !important;
+        visibility: visible !important;
+        display: block !important;
+        position: relative !important;
+    }
+    [data-testid="stSidebar"][aria-expanded="false"] {
+        margin-left: 0 !important;
+        transform: translateX(0) !important;
     }
     [data-testid="stSidebar"] > div:first-child {
         padding: 1.2rem 0.8rem;
+    }
+    /* Ẩn nút collapse mặc định của Streamlit - sidebar luôn cứng */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
     }
 
     /* Brand block */
