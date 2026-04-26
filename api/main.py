@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from api.admin import router as admin_router
 from config.settings import settings
 from observability import metrics_registry
 from orchestrator import handle_chat, handle_chat_stream, store
@@ -14,6 +15,7 @@ from rag.errors import RetrievalError
 from schemas.chat import ChatRequest, ChatResponse
 
 app = FastAPI(title=settings.app_name)
+app.include_router(admin_router)
 
 
 @app.on_event("startup")
