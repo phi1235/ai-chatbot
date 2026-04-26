@@ -1,6 +1,6 @@
 """Admin Portal — quản trị KB, sources, sessions, cache.
 
-Truy cập: http://localhost:8501/Admin (Streamlit auto từ filename)
+Truy cập: http://localhost:8501/Admin
 Backend endpoints dưới /admin/* (api/admin.py).
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ st.set_page_config(
     page_title="Admin · AI Knowledge Assistant",
     page_icon="⚙️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 
@@ -72,7 +73,10 @@ def trigger_ingest(topic: str | None = None, urls: list[dict] | None = None, res
             body["topic"] = topic
         if urls:
             body["urls"] = urls
-        r = http().post(f"{api_url()}/admin/ingest", json=body, timeout=httpx.Timeout(600.0, connect=5.0, read=600.0))
+        r = http().post(
+            f"{api_url()}/admin/ingest", json=body,
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -129,7 +133,10 @@ def clear_cache() -> bool:
 
 def rebuild_bm25() -> dict | None:
     try:
-        r = http().post(f"{api_url()}/admin/bm25/rebuild", timeout=httpx.Timeout(120.0, connect=5.0, read=120.0))
+        r = http().post(
+            f"{api_url()}/admin/bm25/rebuild",
+            timeout=httpx.Timeout(120.0, connect=5.0, read=120.0),
+        )
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -137,68 +144,491 @@ def rebuild_bm25() -> dict | None:
         return None
 
 
-# ─── CSS giống main app ─────────────────────────────────────────────────────
+def check_backend() -> bool:
+    try:
+        r = http().get(f"{api_url()}/health", timeout=2.0)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+# ─── CSS ────────────────────────────────────────────────────────────────────
 st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; background: #faf9f7; }
-    .block-container { max-width: 1200px; padding-top: 1.5rem; }
-    h1, h2, h3 { letter-spacing: -0.02em; color: #1f1f1f; }
-    [data-testid="stMetricValue"] { font-size: 1.6rem; }
-    .status-ok { color: #16a34a; }
-    .status-stale { color: #d97706; }
-    .status-dead { color: #dc2626; }
-    .status-redirect { color: #d97706; }
-    .status-unknown { color: #6b6b6b; }
+
+    :root {
+        --canvas: #faf9f7;
+        --surface: #ffffff;
+        --text: #1f1f1f;
+        --text-muted: #6b6b6b;
+        --text-subtle: #9a9a9a;
+        --border: #ececec;
+        --border-strong: #d9d9d9;
+        --accent: #cc785c;
+        --accent-soft: #f6efeb;
+        --ok: #16a34a;
+        --warn: #d97706;
+        --danger: #dc2626;
+    }
+
+    .stApp {
+        background: var(--canvas);
+        color: var(--text);
+        font-family: 'Inter', -apple-system, sans-serif;
+    }
+    .block-container {
+        max-width: 1200px;
+        padding-top: 2rem;
+        padding-bottom: 4rem;
+    }
+
+    /* Hide Streamlit chrome */
+    #MainMenu, footer { visibility: hidden; }
+    [data-testid="stToolbar"] { display: none; }
+    [data-testid="stHeader"] {
+        background: transparent;
+        height: auto;
+    }
+
+    /* Sidebar - dạng admin nav */
+    [data-testid="stSidebar"] {
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        min-width: 260px !important;
+        max-width: 280px !important;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        padding: 1.2rem 0.8rem;
+    }
+
+    /* Brand block */
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.4rem 0.6rem 1.2rem 0.6rem;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 1rem;
+    }
+    .brand-mark {
+        width: 32px; height: 32px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700;
+        font-size: 1rem;
+    }
+    .brand-text {
+        font-weight: 600;
+        font-size: 0.95rem;
+        line-height: 1.2;
+    }
+    .brand-sub {
+        font-size: 0.72rem;
+        color: var(--text-subtle);
+        margin-top: 0.1rem;
+    }
+
+    /* Section label trong sidebar */
+    .nav-label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--text-subtle);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 0 0.6rem 0.4rem;
+        margin-top: 0.5rem;
+    }
+
+    /* Nav button styling - radio styled as nav items */
+    [data-testid="stSidebar"] [role="radiogroup"] {
+        gap: 0.15rem !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label {
+        padding: 0.55rem 0.7rem;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.12s ease;
+        display: flex;
+        align-items: center;
+        margin: 0 !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover {
+        background: var(--canvas);
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label[data-checked="true"],
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 500;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label > div:first-child {
+        display: none !important;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label > div:last-child p {
+        font-size: 0.92rem;
+        margin: 0;
+    }
+
+    /* Status pill ở dưới sidebar */
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.4rem 0.7rem;
+        border-radius: 8px;
+        background: var(--canvas);
+        border: 1px solid var(--border);
+        font-size: 0.78rem;
+        margin: 0.3rem 0.6rem;
+    }
+    .status-pill.online .dot { background: var(--ok); }
+    .status-pill.offline .dot { background: var(--danger); }
+    .status-pill .dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+    }
+
+    /* Page header */
+    .page-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 1.5rem;
+    }
+    .page-title {
+        font-size: 1.5rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin: 0;
+        color: var(--text);
+    }
+    .page-subtitle {
+        color: var(--text-muted);
+        font-size: 0.92rem;
+        margin: 0.25rem 0 0;
+    }
+
+    /* Card */
+    .admin-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+    }
+    .card-title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin: 0 0 0.6rem;
+        color: var(--text);
+    }
+
+    /* Buttons */
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-weight: 500;
+        font-size: 0.88rem;
+        padding: 0.5rem 0.9rem;
+        transition: all 0.12s ease;
+    }
+    .stButton > button:hover {
+        border-color: var(--border-strong);
+        background: var(--canvas);
+    }
     .stButton > button[kind="primary"] {
-        background: #cc785c;
+        background: var(--accent);
         color: white;
         border: none;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: #b66b50;
+        border: none;
+    }
+
+    /* Inputs */
+    [data-baseweb="input"] {
+        border-radius: 8px !important;
+        border-color: var(--border) !important;
+    }
+    [data-baseweb="input"]:focus-within {
+        border-color: var(--accent) !important;
+    }
+    [data-baseweb="select"] {
+        border-radius: 8px !important;
+    }
+
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.9rem 1.1rem;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        font-weight: 500;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+        font-weight: 600;
+        color: var(--text);
+        letter-spacing: -0.02em;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: 0.78rem;
+        color: var(--text-subtle);
+    }
+
+    /* Status icons trong list */
+    .status-row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.5rem 0.7rem;
+        border-radius: 6px;
+        margin-bottom: 0.2rem;
+        font-size: 0.86rem;
+    }
+    .status-row:hover { background: var(--canvas); }
+    .status-row .badge {
+        flex-shrink: 0;
+        font-weight: 600;
+        font-size: 0.72rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 4px;
+        min-width: 70px;
+        text-align: center;
+    }
+    .status-row.ok .badge       { background: #ecfdf5; color: var(--ok); }
+    .status-row.stale .badge    { background: #fef3c7; color: var(--warn); }
+    .status-row.dead .badge     { background: #fee2e2; color: var(--danger); }
+    .status-row.redirect .badge { background: #fef3c7; color: var(--warn); }
+    .status-row.unknown .badge  { background: #f3f4f6; color: var(--text-muted); }
+    .status-row .topic { color: var(--text-muted); font-size: 0.78rem; flex-shrink: 0; }
+    .status-row .url {
+        flex-grow: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .status-row .detail { color: var(--text-subtle); font-size: 0.78rem; }
+
+    /* Expander */
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        margin-bottom: 0.4rem;
+    }
+    [data-testid="stExpander"] summary {
+        font-weight: 500;
+        font-size: 0.9rem;
+    }
+
+    /* Table */
+    [data-testid="stDataFrame"] {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    /* Form */
+    [data-testid="stForm"] {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.2rem;
+        background: var(--surface);
+    }
+
+    /* URL list item trong topic expander */
+    .url-item {
+        font-size: 0.82rem;
+        color: var(--text);
+        padding: 0.35rem 0;
+        line-height: 1.4;
+    }
+    .url-item .url-title { font-weight: 500; }
+    .url-item .url-link { color: var(--text-subtle); font-size: 0.76rem; }
+
+    /* Hide form border when inside cards */
+    [data-testid="stForm"] [data-testid="stForm"] {
+        border: none;
+        padding: 0;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("⚙️ Admin Portal")
-st.caption("Quản lý knowledge base, sources, sessions và cache")
+# ─── Sidebar Navigation ─────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(
+        '<div class="brand">'
+        '  <div class="brand-mark">A</div>'
+        '  <div>'
+        '    <div class="brand-text">Admin Portal</div>'
+        '    <div class="brand-sub">AI Knowledge Assistant</div>'
+        '  </div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-tab_sources, tab_health, tab_stats, tab_sessions, tab_maint = st.tabs([
-    "📚 Sources", "🩺 Health Check", "📊 Stats", "💾 Sessions", "🛠️ Maintenance",
-])
+    st.markdown('<div class="nav-label">Quản lý</div>', unsafe_allow_html=True)
+    page = st.radio(
+        "Navigation",
+        options=[
+            "Dashboard",
+            "Sources",
+            "Health Check",
+            "Sessions",
+            "Maintenance",
+        ],
+        label_visibility="collapsed",
+        key="admin_nav",
+    )
 
-# ─── Tab 1: Sources ─────────────────────────────────────────────────────────
-with tab_sources:
-    st.subheader("Quản lý sources")
-    st.caption("Thêm URL vào topic, xoá hoặc trigger crawl. Mỗi topic 1 file `sources/<topic>.json`.")
+    st.markdown('<div style="flex-grow:1; min-height: 2rem"></div>', unsafe_allow_html=True)
 
-    col_form, col_actions = st.columns([2, 1], gap="medium")
+    backend_ok = check_backend()
+    pill_class = "online" if backend_ok else "offline"
+    pill_text = "Backend online" if backend_ok else "Backend offline"
+    st.markdown(
+        f'<div class="status-pill {pill_class}"><span class="dot"></span>{pill_text}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="status-pill" style="font-size:0.72rem; color: var(--text-subtle)">'
+        f'{api_url()}</div>',
+        unsafe_allow_html=True,
+    )
 
-    with col_form:
-        st.markdown("##### ➕ Thêm URL mới")
+
+# ─── Helpers cho main render ────────────────────────────────────────────────
+def render_page_header(title: str, subtitle: str = "", actions: callable = None):
+    cols = st.columns([4, 1])
+    with cols[0]:
+        st.markdown(
+            f'<div class="page-header">'
+            f'<div><h1 class="page-title">{title}</h1>'
+            f'<p class="page-subtitle">{subtitle}</p></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    if actions:
+        with cols[1]:
+            actions()
+
+
+def status_row_html(r: dict) -> str:
+    cls = r["status"].lower()
+    icon = {"OK": "✓", "STALE": "⚠", "DEAD": "✗", "REDIRECT": "↪", "UNKNOWN": "?"}.get(r["status"], "·")
+    return (
+        f'<div class="status-row {cls}">'
+        f'  <span class="badge">{icon} {r["status"]}</span>'
+        f'  <span class="topic">[{r["topic"]}]</span>'
+        f'  <span class="url">{r["location"][:90]}</span>'
+        f'  <span class="detail">{r["detail"]}</span>'
+        f'</div>'
+    )
+
+
+# ─── Page: Dashboard ────────────────────────────────────────────────────────
+def page_dashboard():
+    render_page_header(
+        "Dashboard",
+        "Tổng quan hệ thống Knowledge Base",
+    )
+
+    stats = get_stats()
+    if not stats:
+        st.warning("Chưa lấy được stats. Kiểm tra backend.")
+        return
+
+    # Top metrics row
+    c = st.columns(4)
+    c[0].metric("Total chunks", f"{stats['chunks']['total']:,}")
+    c[1].metric("Topics", len(stats["chunks"]["by_topic"]))
+    c[2].metric("Sessions", stats["sessions"]["count_with_messages"])
+    c[3].metric(
+        "Cache size",
+        f"{stats['cache']['size']}",
+        f"max {stats['cache']['max_size']}",
+    )
+
+    st.markdown("&nbsp;")
+
+    col_left, col_right = st.columns([3, 2], gap="medium")
+
+    with col_left:
+        st.markdown('<div class="card-title">Chunks per topic</div>', unsafe_allow_html=True)
+        if stats["chunks"]["by_topic"]:
+            st.bar_chart(stats["chunks"]["by_topic"], height=280)
+        else:
+            st.caption("Chưa có data.")
+
+    with col_right:
+        st.markdown('<div class="card-title">Hệ thống</div>', unsafe_allow_html=True)
+        bm25 = stats["bm25"]
+        bm25_status = "✓ Ready" if bm25["enabled_ready"] else "✗ Not ready"
+        st.metric("BM25 Index", bm25_status, f"{bm25['indexed_chunks']:,} chunks")
+
+        metrics = stats.get("metrics", {})
+        st.metric(
+            "Latency trung bình",
+            f"{metrics.get('latency_avg_ms', 0):.0f} ms",
+            f"max {metrics.get('latency_max_ms', 0):.0f} ms",
+        )
+
+    counters = (stats.get("metrics") or {}).get("counters", {})
+    if counters:
+        st.markdown("&nbsp;")
+        st.markdown('<div class="card-title">Counters</div>', unsafe_allow_html=True)
+        st.dataframe(
+            {"Counter": list(counters.keys()), "Value": list(counters.values())},
+            hide_index=True, use_container_width=True,
+        )
+
+
+# ─── Page: Sources ──────────────────────────────────────────────────────────
+def page_sources():
+    render_page_header(
+        "Sources",
+        "Quản lý nguồn dữ liệu được crawl vào knowledge base",
+    )
+
+    col_left, col_right = st.columns([1, 1], gap="medium")
+
+    with col_left:
+        st.markdown('<div class="card-title">Thêm URL mới</div>', unsafe_allow_html=True)
         with st.form("add_url_form", clear_on_submit=True):
             new_topic = st.text_input("Topic", placeholder="vd: kubernetes, react, fastapi")
             new_url = st.text_input("URL", placeholder="https://docs.example.com/page")
-            new_title = st.text_input("Title (tùy chọn)", placeholder="Để trống sẽ dùng URL")
-            submit = st.form_submit_button("➕ Thêm", type="primary")
+            new_title = st.text_input("Title (tùy chọn)", placeholder="Để trống dùng URL")
+            submit = st.form_submit_button("Thêm vào sources", type="primary", use_container_width=True)
             if submit:
                 if not new_topic or not new_url:
                     st.error("Cần điền topic và URL.")
                 else:
                     ok, msg = add_url(new_topic.strip(), new_url.strip(), new_title.strip())
-                    if ok:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
+                    (st.success if ok else st.error)(msg)
 
-    with col_actions:
-        st.markdown("##### 🚀 Crawl ad-hoc")
-        st.caption("Crawl 1 URL ngay không cần thêm vào sources file.")
+    with col_right:
+        st.markdown('<div class="card-title">Crawl ad-hoc</div>', unsafe_allow_html=True)
+        st.caption("Crawl 1 URL ngay không cần lưu vào sources file.")
         with st.form("adhoc_crawl"):
             adhoc_topic = st.text_input("Topic", value="general", key="adhoc_topic")
             adhoc_url = st.text_input("URL", placeholder="https://...", key="adhoc_url")
-            adhoc_submit = st.form_submit_button("Crawl ngay")
+            adhoc_submit = st.form_submit_button("Crawl ngay", use_container_width=True)
             if adhoc_submit and adhoc_url:
                 with st.spinner("Đang crawl + index..."):
                     res = trigger_ingest(urls=[{
@@ -209,241 +639,191 @@ with tab_sources:
                     }])
                 if res:
                     st.success(
-                        f"Crawl xong: {res['documents_crawled']} docs, {res['chunks_indexed']} chunks"
+                        f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks"
                     )
 
-    st.divider()
+    st.markdown("&nbsp;")
+    st.markdown('<div class="card-title">Topics hiện có</div>', unsafe_allow_html=True)
 
-    st.markdown("##### 📂 Topics hiện có")
     topics = get_sources()
     if not topics:
         st.info("Chưa có topic nào. Thêm URL ở form trên để tạo topic mới.")
-    else:
-        for t in topics:
-            with st.expander(f"**{t['topic']}** — {t['count']} URLs", expanded=False):
-                cols = st.columns([3, 1])
-                with cols[0]:
-                    st.caption(f"File: `{t['file']}`")
-                with cols[1]:
-                    if st.button(
-                        "🔄 Re-crawl topic",
-                        key=f"recrawl-{t['topic']}",
-                        use_container_width=True,
-                    ):
-                        with st.spinner(f"Đang re-crawl {t['topic']}..."):
-                            res = trigger_ingest(topic=t["topic"])
-                        if res:
-                            st.success(
-                                f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks"
-                            )
+        return
 
-                if not t["items"]:
-                    st.caption("(rỗng)")
-                else:
-                    for item in t["items"]:
-                        url_cols = st.columns([5, 1])
-                        with url_cols[0]:
-                            st.markdown(f"- `{item.get('title', item['location'])}`  \n  {item['location']}")
-                        with url_cols[1]:
-                            if st.button(
-                                "Xoá",
-                                key=f"del-{t['topic']}-{item['location']}",
-                                use_container_width=True,
-                            ):
-                                if delete_url(t["topic"], item["location"]):
-                                    st.rerun()
+    for t in topics:
+        with st.expander(f"**{t['topic']}** · {t['count']} URLs", expanded=False):
+            cols = st.columns([3, 1])
+            with cols[0]:
+                st.caption(f"File: `{t['file']}`")
+            with cols[1]:
+                if st.button("Re-crawl topic", key=f"recrawl-{t['topic']}", use_container_width=True):
+                    with st.spinner(f"Đang re-crawl {t['topic']}..."):
+                        res = trigger_ingest(topic=t["topic"])
+                    if res:
+                        st.success(f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
 
-# ─── Tab 2: Health Check ────────────────────────────────────────────────────
-with tab_health:
-    st.subheader("Health check sources")
-    st.caption(
-        "Kiểm tra URLs trong `sources/*.json`: status HTTP, detect content thay đổi (STALE), redirect."
+            if not t["items"]:
+                st.caption("(rỗng)")
+            else:
+                for item in t["items"]:
+                    url_cols = st.columns([5, 1])
+                    with url_cols[0]:
+                        st.markdown(
+                            f'<div class="url-item">'
+                            f'<div class="url-title">{item.get("title", item["location"])}</div>'
+                            f'<div class="url-link">{item["location"]}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with url_cols[1]:
+                        if st.button("Xoá", key=f"del-{t['topic']}-{item['location']}", use_container_width=True):
+                            if delete_url(t["topic"], item["location"]):
+                                st.rerun()
+
+
+# ─── Page: Health Check ─────────────────────────────────────────────────────
+def page_health():
+    render_page_header(
+        "Health Check",
+        "Kiểm tra URLs còn live, detect content thay đổi",
     )
 
     topics = get_sources()
     topic_names = ["(tất cả)"] + [t["topic"] for t in topics]
-    selected = st.selectbox("Topic", topic_names)
+
+    cols = st.columns([2, 1, 1])
+    with cols[0]:
+        selected = st.selectbox("Topic", topic_names, label_visibility="collapsed")
+    with cols[1]:
+        run_btn = st.button("Chạy check", type="primary", use_container_width=True)
+    with cols[2]:
+        if "health_result" in st.session_state:
+            if st.button("Xoá kết quả", use_container_width=True):
+                del st.session_state["health_result"]
+                st.rerun()
+
     selected_topic = None if selected == "(tất cả)" else selected
 
-    cols = st.columns([1, 1, 4])
-    with cols[0]:
-        run_btn = st.button("🩺 Chạy check", type="primary", use_container_width=True)
-    with cols[1]:
-        if "health_result" in st.session_state and st.button("🗑️ Xoá kết quả", use_container_width=True):
-            del st.session_state["health_result"]
-            st.rerun()
-
     if run_btn:
-        with st.spinner("Đang check (có thể mất 1-2 phút)..."):
+        with st.spinner("Đang check (1-2 phút)..."):
             result = run_health(selected_topic)
         if result:
             st.session_state["health_result"] = result
             st.session_state["health_run_at"] = datetime.now().strftime("%H:%M:%S")
 
-    if "health_result" in st.session_state:
-        result = st.session_state["health_result"]
-        run_at = st.session_state.get("health_run_at", "")
+    if "health_result" not in st.session_state:
+        st.info("Chưa có kết quả. Click 'Chạy check' để bắt đầu.")
+        return
 
-        st.caption(f"Last run: {run_at}")
-        m_cols = st.columns(5)
-        m_cols[0].metric("Total", result["total"])
-        m_cols[1].metric("✓ OK", result["ok"])
-        m_cols[2].metric("⚠ Stale", result["stale"])
-        m_cols[3].metric("✗ Dead", result["dead"])
-        m_cols[4].metric("↪ Redirect", result["redirect"])
+    result = st.session_state["health_result"]
+    run_at = st.session_state.get("health_run_at", "")
 
-        # Filter row
-        st.divider()
-        filter_cols = st.columns(5)
-        show_ok = filter_cols[0].checkbox("OK", value=False)
-        show_stale = filter_cols[1].checkbox("Stale", value=True)
-        show_dead = filter_cols[2].checkbox("Dead", value=True)
-        show_redirect = filter_cols[3].checkbox("Redirect", value=True)
-        show_unknown = filter_cols[4].checkbox("Unknown", value=True)
+    st.caption(f"Last run: {run_at}")
+    m_cols = st.columns(5)
+    m_cols[0].metric("Total", result["total"])
+    m_cols[1].metric("OK", result["ok"])
+    m_cols[2].metric("Stale", result["stale"])
+    m_cols[3].metric("Dead", result["dead"])
+    m_cols[4].metric("Redirect", result["redirect"])
 
-        wanted = set()
-        if show_ok:
-            wanted.add("OK")
-        if show_stale:
-            wanted.add("STALE")
-        if show_dead:
-            wanted.add("DEAD")
-        if show_redirect:
-            wanted.add("REDIRECT")
-        if show_unknown:
-            wanted.add("UNKNOWN")
+    st.markdown("&nbsp;")
+    st.markdown('<div class="card-title">Filter</div>', unsafe_allow_html=True)
+    f_cols = st.columns(5)
+    show_ok = f_cols[0].checkbox("OK", value=False)
+    show_stale = f_cols[1].checkbox("Stale", value=True)
+    show_dead = f_cols[2].checkbox("Dead", value=True)
+    show_redirect = f_cols[3].checkbox("Redirect", value=True)
+    show_unknown = f_cols[4].checkbox("Unknown", value=True)
 
-        for r in result["results"]:
-            if r["status"] not in wanted:
-                continue
-            cls = {
-                "OK": "status-ok", "STALE": "status-stale", "DEAD": "status-dead",
-                "REDIRECT": "status-redirect", "UNKNOWN": "status-unknown",
-            }.get(r["status"], "")
-            icon = {"OK": "✓", "STALE": "⚠", "DEAD": "✗", "REDIRECT": "↪", "UNKNOWN": "?"}[r["status"]]
-            st.markdown(
-                f"<div><span class='{cls}' style='font-weight:600'>{icon} {r['status']}</span>  "
-                f"<span style='color:#6b6b6b'>[{r['topic']}]</span>  "
-                f"{r['location'][:90]}  "
-                f"<span style='color:#6b6b6b'>({r['detail']})</span></div>",
-                unsafe_allow_html=True,
-            )
+    wanted = set()
+    if show_ok:
+        wanted.add("OK")
+    if show_stale:
+        wanted.add("STALE")
+    if show_dead:
+        wanted.add("DEAD")
+    if show_redirect:
+        wanted.add("REDIRECT")
+    if show_unknown:
+        wanted.add("UNKNOWN")
 
-        # Auto re-ingest button
-        stale_urls = [r for r in result["results"] if r["status"] == "STALE"]
-        if stale_urls:
-            st.divider()
-            st.warning(f"Có {len(stale_urls)} URL stale — content đã thay đổi.")
-            if st.button("🔄 Re-ingest tất cả URL stale", type="primary"):
-                urls_to_update = [
-                    {"location": r["location"], "topic": r["topic"], "title": r["title"], "source": "website"}
-                    for r in stale_urls
-                ]
-                with st.spinner("Đang re-crawl + re-embed..."):
-                    res = trigger_ingest(urls=urls_to_update)
-                if res:
-                    st.success(f"Đã update: {res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
+    rows_html = "".join(status_row_html(r) for r in result["results"] if r["status"] in wanted)
+    if rows_html:
+        st.markdown(rows_html, unsafe_allow_html=True)
+    else:
+        st.caption("(không có entry nào với filter hiện tại)")
 
-# ─── Tab 3: Stats ───────────────────────────────────────────────────────────
-with tab_stats:
-    st.subheader("Knowledge Base Stats")
+    stale_urls = [r for r in result["results"] if r["status"] == "STALE"]
+    if stale_urls:
+        st.markdown("&nbsp;")
+        st.warning(f"Có {len(stale_urls)} URL stale — content đã thay đổi.")
+        if st.button("Re-ingest tất cả URL stale", type="primary"):
+            urls_to_update = [
+                {"location": r["location"], "topic": r["topic"], "title": r["title"], "source": "website"}
+                for r in stale_urls
+            ]
+            with st.spinner("Đang re-crawl + re-embed..."):
+                res = trigger_ingest(urls=urls_to_update)
+            if res:
+                st.success(f"{res['documents_crawled']} docs, {res['chunks_indexed']} chunks")
 
-    if st.button("🔄 Refresh", key="refresh_stats"):
-        st.rerun()
 
-    stats = get_stats()
-    if stats:
-        st.markdown("##### Chunks")
-        m_cols = st.columns(3)
-        m_cols[0].metric("Total chunks", stats["chunks"]["total"])
-        m_cols[1].metric("Topics", len(stats["chunks"]["by_topic"]))
-        m_cols[2].metric("Session uploads", stats["chunks"]["session_uploads"])
+# ─── Page: Sessions ─────────────────────────────────────────────────────────
+def page_sessions():
+    render_page_header(
+        "Sessions",
+        "Cuộc trò chuyện đã lưu trong DB",
+    )
 
-        st.caption("Số chunks per topic:")
-        if stats["chunks"]["by_topic"]:
-            st.bar_chart(stats["chunks"]["by_topic"])
-
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("##### BM25 Index")
-            bm25 = stats["bm25"]
-            st.metric(
-                "Status",
-                "✓ Ready" if bm25["enabled_ready"] else "✗ Not ready",
-                f"{bm25['indexed_chunks']} chunks indexed",
-            )
-
-        with c2:
-            st.markdown("##### Answer Cache")
-            cache = stats["cache"]
-            st.metric(
-                "Cache size",
-                f"{cache['size']} / {cache['max_size']}",
-                f"TTL {cache['ttl_seconds']}s",
-            )
-
-        st.divider()
-        st.markdown("##### Metrics (counters từ khi backend khởi động)")
-        metrics = stats.get("metrics", {})
-        counters = metrics.get("counters", {})
-        if counters:
-            st.dataframe(
-                {"Counter": list(counters.keys()), "Value": list(counters.values())},
-                hide_index=True,
-                use_container_width=True,
-            )
-        m_lat = st.columns(3)
-        m_lat[0].metric("Latency avg", f"{metrics.get('latency_avg_ms', 0)} ms")
-        m_lat[1].metric("Latency max", f"{metrics.get('latency_max_ms', 0)} ms")
-        m_lat[2].metric("Sessions", stats["sessions"]["count_with_messages"])
-
-# ─── Tab 4: Sessions ────────────────────────────────────────────────────────
-with tab_sessions:
-    st.subheader("Sessions / Cuộc trò chuyện")
     sessions = get_sessions()
     if not sessions:
         st.info("Chưa có session nào.")
-    else:
-        for s in sessions:
-            cols = st.columns([4, 2, 1, 1])
-            cols[0].markdown(f"**{s['title']}**")
-            cols[1].caption(f"{s['message_count']} tin nhắn")
-            cols[2].caption(s["id"][:8])
-            with cols[3]:
-                if st.button("🗑️", key=f"delsess-{s['id']}", help="Xoá session"):
-                    if delete_session(s["id"]):
-                        st.rerun()
+        return
 
-# ─── Tab 5: Maintenance ─────────────────────────────────────────────────────
-with tab_maint:
-    st.subheader("Maintenance")
-    st.caption("Các tác vụ bảo trì hệ thống.")
+    st.caption(f"{len(sessions)} sessions")
 
-    cols = st.columns(2)
+    for s in sessions:
+        cols = st.columns([4, 2, 2, 1])
+        cols[0].markdown(f"**{s['title']}**")
+        cols[1].caption(f"{s['message_count']} tin nhắn")
+        cols[2].caption(s["id"][:8])
+        with cols[3]:
+            if st.button("Xoá", key=f"delsess-{s['id']}"):
+                if delete_session(s["id"]):
+                    st.rerun()
+
+
+# ─── Page: Maintenance ──────────────────────────────────────────────────────
+def page_maintenance():
+    render_page_header(
+        "Maintenance",
+        "Bảo trì cache, BM25 index, reset hệ thống",
+    )
+
+    cols = st.columns(2, gap="medium")
+
     with cols[0]:
-        st.markdown("##### Answer Cache")
-        st.caption("Xoá toàn bộ cache câu trả lời. Lần hỏi tiếp theo sẽ phải gọi LLM lại.")
-        if st.button("🗑️ Clear answer cache", use_container_width=True):
+        st.markdown('<div class="card-title">Answer Cache</div>', unsafe_allow_html=True)
+        st.caption("Xoá cache câu trả lời. Lần hỏi tiếp theo sẽ gọi LLM lại.")
+        if st.button("Clear cache", use_container_width=True):
             if clear_cache():
                 st.success("Đã xoá cache")
 
     with cols[1]:
-        st.markdown("##### BM25 Index")
-        st.caption("Rebuild BM25 từ Chroma. Chạy khi nghi ngờ index lệch với data.")
-        if st.button("🔄 Rebuild BM25", use_container_width=True):
+        st.markdown('<div class="card-title">BM25 Index</div>', unsafe_allow_html=True)
+        st.caption("Rebuild BM25 từ Chroma. Chạy khi nghi ngờ index lệch.")
+        if st.button("Rebuild BM25", use_container_width=True):
             with st.spinner("Đang rebuild..."):
                 res = rebuild_bm25()
             if res:
-                st.success(f"Đã rebuild với {res['chunks_indexed']} chunks")
+                st.success(f"Rebuild xong với {res['chunks_indexed']:,} chunks")
 
-    st.divider()
-    st.markdown("##### Reset toàn bộ KB")
-    st.caption("⚠️ Xoá toàn bộ Chroma collection và re-ingest từ tất cả `sources/*.json`. Mất vài phút.")
-    confirm = st.checkbox("Tôi hiểu thao tác này không thể hoàn tác")
-    if st.button("☢️ Reset & Re-ingest All", disabled=not confirm, type="primary"):
-        with st.spinner("Đang reset + crawl + re-embed (có thể mất 5-10 phút)..."):
-            # Reset bằng cách trigger ingest cho từng topic với reset=True ở topic đầu
+    st.markdown("&nbsp;")
+    st.markdown('<div class="card-title">Reset toàn bộ Knowledge Base</div>', unsafe_allow_html=True)
+    st.caption("Xoá toàn bộ Chroma collection và re-ingest từ tất cả sources/*.json. Mất 5-10 phút.")
+    confirm = st.checkbox("Tôi hiểu thao tác này không thể hoàn tác", key="confirm_reset")
+    if st.button("Reset & Re-ingest All", disabled=not confirm, type="primary"):
+        with st.spinner("Đang reset + crawl + re-embed (5-10 phút)..."):
             topics = get_sources()
             if topics:
                 first = topics[0]["topic"]
@@ -452,3 +832,18 @@ with tab_maint:
                     if t["count"] > 0:
                         trigger_ingest(topic=t["topic"])
         st.success("Reset hoàn tất")
+
+
+# ─── Render selected page ───────────────────────────────────────────────────
+PAGE_RENDERERS = {
+    "Dashboard": page_dashboard,
+    "Sources": page_sources,
+    "Health Check": page_health,
+    "Sessions": page_sessions,
+    "Maintenance": page_maintenance,
+}
+
+if not backend_ok:
+    st.error(f"Không kết nối được backend tại {api_url()}. Khởi động backend rồi refresh.")
+else:
+    PAGE_RENDERERS[page]()
