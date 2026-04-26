@@ -43,6 +43,13 @@ class Settings:
     rrf_k: int = int(os.getenv("RRF_K", "60"))
     # Số chunks lấy từ mỗi nguồn trước khi fuse (cao hơn top_k cuối)
     hybrid_fetch_k: int = int(os.getenv("HYBRID_FETCH_K", "10"))
+    # Cross-encoder re-ranker: chấm điểm (query, chunk) chính xác hơn rồi rerank.
+    # Default OFF vì cộng 200-500ms; bật khi cần chất lượng cao nhất.
+    reranker_enabled: bool = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
+    reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+    # Số chunks lấy từ retriever (vector + BM25 fused) đưa vào reranker.
+    # Cao hơn top_k cuối để reranker có nhiều ứng viên để chọn.
+    reranker_fetch_k: int = int(os.getenv("RERANKER_FETCH_K", "10"))
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
     enable_llm_reasoning: bool = os.getenv("ENABLE_LLM_REASONING", "false").lower() == "true"

@@ -222,6 +222,10 @@ def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[
 
     detected_topic = topic or infer_topic(normalized_query)
 
+    # Khi reranker bật, lấy nhiều candidates hơn để reranker có lựa chọn.
+    # Nếu không có reranker, lấy đúng top_k.
+    candidate_k = settings.reranker_fetch_k if settings.reranker_enabled else top_k
+
     if settings.hybrid_search_enabled:
         from rag.hybrid import get_index, load_or_build, rrf_fuse
         index = get_index()
@@ -236,17 +240,22 @@ def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[
         if not bm25_chunks and not vec_chunks:
             raise RetrievalError("Không tìm thấy context phù hợp trong knowledge base.")
         if not bm25_chunks:
-            return vec_chunks[:top_k]
-        if not vec_chunks:
-            return bm25_chunks[:top_k]
+            candidates = vec_chunks[:candidate_k]
+        elif not vec_chunks:
+            candidates = bm25_chunks[:candidate_k]
+        else:
+            candidates = rrf_fuse([vec_chunks, bm25_chunks], top_k=candidate_k)
+    else:
+        # Vector-only mode
+        candidates = _vector_retrieve(normalized_query, top_k=candidate_k, topic=detected_topic)
+        if not candidates:
+            raise RetrievalError("Không tìm thấy context phù hợp trong knowledge base.")
 
-        return rrf_fuse([vec_chunks, bm25_chunks], top_k=top_k)
-
-    # Vector-only mode
-    chunks = _vector_retrieve(normalized_query, top_k=top_k, topic=detected_topic)
-    if not chunks:
-        raise RetrievalError("Không tìm thấy context phù hợp trong knowledge base.")
-    return chunks
+    # Stage 2: cross-encoder rerank (nếu bật)
+    if settings.reranker_enabled and len(candidates) > top_k:
+        from rag.reranker import rerank
+        return rerank(normalized_query, candidates, top_k=top_k)
+    return candidates[:top_k]
 
 
 def _build_chunks(

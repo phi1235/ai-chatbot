@@ -28,6 +28,12 @@ def _startup_warmup() -> None:
             load_or_build()
         except Exception:
             pass
+    if settings.reranker_enabled:
+        try:
+            from rag.reranker import warmup as rerank_warmup
+            rerank_warmup()
+        except Exception:
+            pass
 
 
 def _check_gateway(req: ChatRequest, request: Request, x_api_key: str | None) -> None:
