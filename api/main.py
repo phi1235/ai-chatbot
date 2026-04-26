@@ -16,12 +16,18 @@ app = FastAPI(title=settings.app_name)
 
 @app.on_event("startup")
 def _startup_warmup() -> None:
-    """Preload embedding model + ChromaDB connection để request đầu tiên không bị cold-start."""
+    """Preload embedding model + ChromaDB + BM25 index để request đầu không cold-start."""
     try:
         from rag.retriever import warmup
         warmup()
     except Exception:
         pass
+    if settings.hybrid_search_enabled:
+        try:
+            from rag.hybrid import load_or_build
+            load_or_build()
+        except Exception:
+            pass
 
 
 def _check_gateway(req: ChatRequest, request: Request, x_api_key: str | None) -> None:

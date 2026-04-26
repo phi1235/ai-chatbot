@@ -40,12 +40,15 @@ GARBAGE_PATTERNS = [
 ]
 
 SYSTEM_PROMPT = (
-    "Bạn là trợ lý nghiệp vụ tiếng Việt. Luôn trả lời bằng tiếng Việt CÓ DẤU đầy đủ "
-    "(không được trả lời bằng tiếng Việt không dấu). Trả lời trực tiếp câu hỏi của người dùng "
-    "bằng văn xuôi ngắn gọn, dựa trên CONTEXT được cung cấp. Nếu CONTEXT không có thông tin "
-    "liên quan, lịch sự từ chối và đề nghị người dùng đặt câu hỏi cụ thể hơn. "
-    "Không được bịa thông tin. Không được lặp lại hay phân tích hướng dẫn này trong câu trả lời. "
-    "Không viết câu mở đầu dạng meta. Trả lời tự nhiên như một chuyên viên."
+    "Bạn là trợ lý nghiệp vụ tiếng Việt. Luôn trả lời bằng tiếng Việt CÓ DẤU đầy đủ. "
+    "Trả lời trực tiếp câu hỏi của người dùng bằng văn xuôi ngắn gọn. "
+    "Sử dụng tài liệu nội bộ làm nguồn tham khảo nhưng KHÔNG được nhắc đến từ "
+    "'CONTEXT', 'sample_docs', 'tài liệu', 'context', hay bất kỳ chi tiết kỹ thuật "
+    "nào về cách câu trả lời được tạo ra. "
+    "KHÔNG bắt đầu câu trả lời bằng 'Dựa trên...', 'Theo tài liệu...', 'Trong CONTEXT...'. "
+    "KHÔNG viết ghi chú dạng '(Note: ...)' hay '(Lưu ý: ...)' ở cuối. "
+    "Nếu thông tin không đủ, nói 'Tôi chưa có đủ thông tin về vấn đề này' và dừng. "
+    "Không được bịa. Trả lời tự nhiên như một chuyên viên đang giải đáp trực tiếp."
 )
 
 CITATION_REQUEST_KEYWORDS = (
@@ -165,6 +168,52 @@ def _fallback_answer(context_chunks: list[dict[str, Any]], query: str = "") -> s
     return base
 
 
+# Pattern bắt câu mở đầu meta thường gặp. Yêu cầu match đến dấu phân cách
+# (`,`, `:`, `.`, hoặc xuống dòng) sau keyword để không cắt nửa câu.
+_META_OPENING_PATTERNS = [
+    re.compile(
+        r"^\s*Dựa\s+trên\b[^\n]*?\b(?:CONTEXT|context|sample_docs|tài\s*liệu|nội\s*dung\s*được\s*cung\s*cấp)\b[^\n]*?[,:.]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*Theo\b[^\n]*?\b(?:CONTEXT|context|sample_docs|tài\s*liệu)\b[^\n]*?[,:.]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*Trong\s+(?:CONTEXT|context|sample_docs)\b[^\n]*?[,:.]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*câu\s+trả\s+lời\b[^\n]*?\blà\s*[:]\s*",
+        re.IGNORECASE,
+    ),
+]
+# Pattern bắt footnote meta ở cuối "(Note: ...)" / "(Lưu ý: ...)" mention internal terms
+_META_FOOTNOTE_PATTERNS = [
+    re.compile(r"\n*\s*\(\s*(?:Note|Lưu\s*ý|Ghi\s*chú)\s*:[^)]*?(?:CONTEXT|context|sample_docs|tài\s*liệu|nội\s*dung\s*được\s*cung)[^)]*?\)\s*$", re.IGNORECASE | re.DOTALL),
+]
+
+
+def strip_meta_leak(answer: str) -> str:
+    """Bỏ câu mở đầu meta + footnote tham chiếu term nội bộ.
+
+    Model yếu hay leak: 'Dựa trên CONTEXT...', '(Note: trong sample_docs...)'.
+    Strip thay vì block để giữ được phần answer hợp lý ở giữa.
+    """
+    text = answer
+    # Strip footnote ở cuối trước (tránh ảnh hưởng pattern khác)
+    for pat in _META_FOOTNOTE_PATTERNS:
+        text = pat.sub("", text)
+    # Strip opening meta sentences (lặp 1-2 lần vì có thể có 2 câu liên tiếp)
+    for _ in range(2):
+        for pat in _META_OPENING_PATTERNS:
+            new = pat.sub("", text, count=1)
+            if new != text:
+                text = new
+                break
+    return text.strip()
+
+
 def _looks_like_garbage(answer: str) -> bool:
     lowered = answer.lower()
     if any(re.search(pattern, lowered) for pattern in GARBAGE_PATTERNS):
@@ -249,6 +298,7 @@ def generate_answer(
         answer = (response.choices[0].message.content or "").strip()
     if not answer:
         raise RuntimeError("OpenRouter API không trả về nội dung trả lời.")
+    answer = strip_meta_leak(answer)
     if _looks_like_garbage(answer):
         return _fallback_answer(context_chunks, query)
     return answer

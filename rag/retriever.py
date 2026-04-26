@@ -187,13 +187,29 @@ def _query_collection(
     return collection.query(**query_kwargs)
 
 
+def _vector_retrieve(query: str, top_k: int, topic: str | None) -> list[dict[str, Any]]:
+    """Vector search qua Chroma. Nếu có topic, ưu tiên filter; rỗng thì fallback no-filter."""
+    if topic:
+        results = _query_collection(query, top_k=top_k, topic=topic)
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        dists = results.get("distances", [[]])[0]
+        if docs:
+            return _build_chunks(docs, metas, dists)
+
+    results = _query_collection(query, top_k=top_k, topic=None)
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+    dists = results.get("distances", [[]])[0]
+    return _build_chunks(docs, metas, dists)
+
+
 def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[str, Any]]:
     """
-    Tìm các chunk liên quan nhất và trả cả metadata để generator trích dẫn được nguồn.
+    Tìm chunks liên quan nhất.
 
-    Chiến lược: nếu detect được topic thì query Chroma với filter topic trước (đảm bảo
-    đúng chủ đề kể cả khi embedding similarity yếu cho query tiếng Việt). Nếu không có
-    kết quả mới fallback sang query không filter.
+    Mặc định dùng hybrid search (BM25 + vector) khi `HYBRID_SEARCH_ENABLED=true`.
+    Tắt env để fallback về vector-only mode.
     """
     normalized_query = query.strip()
     if not normalized_query:
@@ -206,23 +222,31 @@ def retrieve(query: str, top_k: int = 3, topic: str | None = None) -> list[dict[
 
     detected_topic = topic or infer_topic(normalized_query)
 
-    # Ưu tiên 1: query với topic filter
-    if detected_topic:
-        results = _query_collection(normalized_query, top_k=top_k, topic=detected_topic)
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        if documents:
-            return _build_chunks(documents, metadatas, distances)
+    if settings.hybrid_search_enabled:
+        from rag.hybrid import get_index, load_or_build, rrf_fuse
+        index = get_index()
+        if not index.is_ready():
+            index = load_or_build()
 
-    # Ưu tiên 2: không filter (fallback)
-    results = _query_collection(normalized_query, top_k=top_k, topic=None)
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-    if not documents:
+        fetch_k = settings.hybrid_fetch_k
+        vec_chunks = _vector_retrieve(normalized_query, top_k=fetch_k, topic=detected_topic)
+        bm25_chunks = index.search(normalized_query, top_k=fetch_k, topic=detected_topic)
+
+        # Nếu BM25 chưa sẵn (vd lần đầu chưa rebuild), dùng vector-only
+        if not bm25_chunks and not vec_chunks:
+            raise RetrievalError("Không tìm thấy context phù hợp trong knowledge base.")
+        if not bm25_chunks:
+            return vec_chunks[:top_k]
+        if not vec_chunks:
+            return bm25_chunks[:top_k]
+
+        return rrf_fuse([vec_chunks, bm25_chunks], top_k=top_k)
+
+    # Vector-only mode
+    chunks = _vector_retrieve(normalized_query, top_k=top_k, topic=detected_topic)
+    if not chunks:
         raise RetrievalError("Không tìm thấy context phù hợp trong knowledge base.")
-    return _build_chunks(documents, metadatas, distances)
+    return chunks
 
 
 def _build_chunks(

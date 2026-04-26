@@ -20,6 +20,8 @@ db/conversations.sqlite-*
 db/*.db
 db/*.db-shm
 db/*.db-wal
+db/*.pkl
+db/bm25_index.pkl
 
 # Crawled data (HTML/text raw từ docs bên thứ 3 - copyright của họ + dung lượng lớn)
 # Người clone repo sẽ tự `python ingest.py` để tạo lại data của riêng mình

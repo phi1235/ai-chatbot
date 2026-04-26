@@ -36,6 +36,13 @@ class Settings:
     chroma_collection: str = os.getenv("CHROMA_COLLECTION", "ai_knowledge")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     embedding_cache_size: int = int(os.getenv("EMBEDDING_CACHE_SIZE", "256"))
+    # Hybrid search: kết hợp BM25 (keyword) + Vector (semantic)
+    hybrid_search_enabled: bool = os.getenv("HYBRID_SEARCH_ENABLED", "true").lower() == "true"
+    bm25_index_path: str = os.getenv("BM25_INDEX_PATH", "./db/bm25_index.pkl")
+    # RRF k constant - giá trị nhỏ ưu tiên top results, 60 là default chuẩn
+    rrf_k: int = int(os.getenv("RRF_K", "60"))
+    # Số chunks lấy từ mỗi nguồn trước khi fuse (cao hơn top_k cuối)
+    hybrid_fetch_k: int = int(os.getenv("HYBRID_FETCH_K", "10"))
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
     enable_llm_reasoning: bool = os.getenv("ENABLE_LLM_REASONING", "false").lower() == "true"

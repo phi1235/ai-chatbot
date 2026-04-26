@@ -7,6 +7,7 @@ from rag.generator import (
     _looks_like_garbage,
     _strip_diacritics,
     _tokenize,
+    strip_meta_leak,
     wants_citations,
 )
 
@@ -102,3 +103,50 @@ def test_garbage_clean_answer_passes():
 def test_garbage_detects_context_marker_echo():
     leak = "=== context === something here"
     assert _looks_like_garbage(leak)
+
+
+# ─── strip_meta_leak ─────────────────────────────────────────────────────────
+def test_strip_meta_leak_dua_tren_context():
+    leaky = "Dựa trên sample_docs trong CONTEXT, Pod là đơn vị nhỏ nhất."
+    assert strip_meta_leak(leaky) == "Pod là đơn vị nhỏ nhất."
+
+
+def test_strip_meta_leak_theo_context():
+    leaky = "Theo CONTEXT đã cung cấp, Deployment quản lý ReplicaSet."
+    out = strip_meta_leak(leaky)
+    assert "CONTEXT" not in out
+    assert "Deployment quản lý" in out
+
+
+def test_strip_meta_leak_footnote_with_sample_docs():
+    leaky = "Pod là đơn vị nhỏ nhất.\n\n(Note: Đây là thông tin trong sample_docs về Kubernetes.)"
+    out = strip_meta_leak(leaky)
+    assert "Note" not in out
+    assert "sample_docs" not in out
+    assert "Pod là đơn vị nhỏ nhất." in out
+
+
+def test_strip_meta_leak_combined_opening_and_footnote():
+    leaky = (
+        "Dựa trên sample_docs trong CONTEXT, câu trả lời là:\n\n"
+        "Pod là đơn vị nhỏ nhất trong K8s.\n\n"
+        "(Note: Thông tin từ sample_docs đã cung cấp.)"
+    )
+    out = strip_meta_leak(leaky)
+    assert "CONTEXT" not in out
+    assert "sample_docs" not in out
+    assert "Note" not in out
+    assert "Pod là đơn vị nhỏ nhất" in out
+
+
+def test_strip_meta_leak_clean_answer_unchanged():
+    """Câu trả lời sạch không bị strip."""
+    clean = "Pod là đơn vị triển khai nhỏ nhất trong Kubernetes, gói nhiều container."
+    assert strip_meta_leak(clean) == clean
+
+
+def test_strip_meta_leak_idempotent():
+    leaky = "Dựa trên CONTEXT, Pod là gói container."
+    once = strip_meta_leak(leaky)
+    twice = strip_meta_leak(once)
+    assert once == twice

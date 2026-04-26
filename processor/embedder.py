@@ -51,6 +51,7 @@ def embed_and_store(chunks: list[dict]) -> None:
         embeddings=[item[3] for item in new_payload],
     )
     print(f"Đã lưu {len(new_payload)} chunks vào ChromaDB")
+    _rebuild_bm25_if_enabled()
 
 
 def clear_collection() -> None:
@@ -58,6 +59,20 @@ def clear_collection() -> None:
     client.delete_collection(settings.chroma_collection)
     collection = client.get_or_create_collection(settings.chroma_collection)
     print("Đã xóa toàn bộ dữ liệu trong collection")
+    _rebuild_bm25_if_enabled()
+
+
+def _rebuild_bm25_if_enabled() -> None:
+    """Rebuild BM25 index sau khi Chroma có thay đổi để 2 nguồn đồng bộ."""
+    if not settings.hybrid_search_enabled:
+        return
+    try:
+        from rag.hybrid import rebuild_from_chroma
+        rebuild_from_chroma()
+        print("Đã rebuild BM25 index")
+    except Exception as exc:
+        # Không fatal - hybrid search sẽ load_or_build lại khi query đầu tiên
+        print(f"[WARN] Rebuild BM25 thất bại (sẽ rebuild khi query đầu): {exc}")
 
 
 if __name__ == "__main__":

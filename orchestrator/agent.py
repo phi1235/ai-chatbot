@@ -347,9 +347,10 @@ def handle_chat_stream(request: ChatRequest) -> Iterator[dict[str, Any]]:
 
     raw_answer = "".join(buffer).strip()
 
-    # Garbage check: model có thể leak prompt rules hoặc trả lời lảm nhảm.
-    # Nếu phát hiện -> thay bằng fallback, không cache.
-    from rag.generator import _fallback_answer, _looks_like_garbage
+    # Strip meta-leak (model yếu hay nhắc "CONTEXT", "sample_docs", "(Note:...)").
+    # Garbage check sau khi strip - vì strip có thể đã làm answer ổn.
+    from rag.generator import _fallback_answer, _looks_like_garbage, strip_meta_leak
+    raw_answer = strip_meta_leak(raw_answer)
     is_garbage = _looks_like_garbage(raw_answer) if raw_answer else True
     if is_garbage:
         metrics_registry.increment("chat_garbage_output_total")
