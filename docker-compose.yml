@@ -1,0 +1,43 @@
+# Tất cả config (port, host, model, key, ...) đến từ .env.
+# docker-compose chỉ reference tên env, không có default/inline value.
+# Đổi config = chỉ sửa .env, không đụng compose.
+
+services:
+  backend:
+    build: .
+    image: ai-chatbot:latest
+    container_name: ai-chatbot-backend
+    command: uvicorn api.main:app
+    env_file: .env
+    ports:
+      - "${UVICORN_PORT}:${UVICORN_PORT}"
+    volumes:
+      - ./db:/home/app/db
+      - ./data:/home/app/data
+      - hf-cache:/home/app/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ[\"UVICORN_PORT\"]}/health', timeout=2)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  ui:
+    image: ai-chatbot:latest
+    container_name: ai-chatbot-ui
+    command: streamlit run ui/app.py
+    env_file: .env
+    ports:
+      - "${STREAMLIT_SERVER_PORT}:${STREAMLIT_SERVER_PORT}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

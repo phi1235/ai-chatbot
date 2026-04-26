@@ -22,15 +22,21 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Bước 2: Cấu hình OpenRouter API key
+### Bước 2: Cấu hình `.env`
 
-Mở file `.env` và thay thế:
-```env
-OPENROUTER_API_KEY=your_api_key_here
-OPENROUTER_MODEL=openrouter/free
+Copy template rồi điền key:
+```bash
+cp .env.example .env
+# Sau đó mở .env, điền OPENROUTER_API_KEY
 ```
 
-Bạn có thể copy từ `.env.example` rồi điền key thật.
+Tất cả config đều trong `.env`:
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` — LLM
+- `UVICORN_HOST` / `UVICORN_PORT` — backend (mặc định 0.0.0.0:8000)
+- `STREAMLIT_SERVER_ADDRESS` / `STREAMLIT_SERVER_PORT` — UI (mặc định 0.0.0.0:8501)
+- `LOG_FORMAT`, `LOG_LEVEL`, `RETRIEVAL_TOP_K`, ...
+
+`uvicorn` và `streamlit` đọc các biến `UVICORN_*` / `STREAMLIT_*` từ `.env` tự động — không cần truyền `--port`.
 
 ### Bước 3: Chạy ứng dụng
 
@@ -43,7 +49,7 @@ Chọn option 3 để chạy cả backend và UI.
 **Cách 2: Chạy thủ công**
 ```bash
 # Terminal 1 - Backend
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload
 
 # Terminal 2 - UI
 streamlit run ui/app.py
@@ -213,16 +219,18 @@ python setup_sample_data.py
 ```
 
 ### Backend không chạy được
-Kiểm tra port 8000 có bị chiếm không:
+Kiểm tra port (mặc định `${UVICORN_PORT:-8000}`) có bị chiếm không:
 ```bash
-lsof -i :8000
+lsof -i :${UVICORN_PORT:-8000}
 ```
 
 ### UI không kết nối được backend
-Đảm bảo backend đang chạy ở port 8000:
+Đảm bảo backend đang chạy:
 ```bash
-curl http://localhost:8000/
+curl http://localhost:${UVICORN_PORT:-8000}/health
 ```
+
+Nếu đổi port trong `.env`, nhớ restart cả backend lẫn UI để pick up env mới.
 
 ## Đọc thêm
 

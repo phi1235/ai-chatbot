@@ -90,7 +90,7 @@ pip install -r requirements.txt
 python setup_sample_data.py
 
 # 4. Chạy backend (Terminal 1)
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload
 
 # 5. Chạy UI (Terminal 2)
 streamlit run ui/app.py

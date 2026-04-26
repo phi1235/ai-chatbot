@@ -44,7 +44,7 @@ def _slugify(value: str) -> str:
 
 
 def _build_doc_id(location: str, topic: str) -> str:
-    digest = hashlib.sha1(f"{location}|{topic}".encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(f"{location}|{topic}".encode()).hexdigest()[:10]
     return f"{_slugify(topic)}-{digest}"
 
 

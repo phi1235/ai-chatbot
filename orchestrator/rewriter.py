@@ -14,10 +14,10 @@ Caller chịu trách nhiệm gọi rewrite trước khi retrieve.
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
-from rag.generator import _get_client
 from config.settings import settings
+from rag.generator import _get_client
 
 REWRITE_SYSTEM = (
     "Bạn là module viết lại câu hỏi cho hệ thống RAG. Dựa trên lịch sử hội thoại và "

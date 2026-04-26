@@ -13,16 +13,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Bước 2: Cấu hình OpenRouter API (2 phút)
+## Bước 2: Cấu hình `.env` (2 phút)
 
-1. Tạo API key OpenRouter
-2. Copy `.env.example` thành `.env`
-3. Cập nhật file `.env`:
+1. Tạo API key tại https://openrouter.ai/
+2. Copy template: `cp .env.example .env`
+3. Mở `.env` và điền `OPENROUTER_API_KEY`. Các biến khác (port, log, model...) đã có sẵn default hợp lý.
 
 ```env
-OPENROUTER_API_KEY=sk-or-...your_actual_key_here
-OPENROUTER_MODEL=openrouter/free
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=google/gemma-3-27b-it:free   # hoặc model free khác từ openrouter.ai
+UVICORN_PORT=8000                              # backend port
+STREAMLIT_SERVER_PORT=8501                     # UI port
 ```
+
+> `uvicorn` và `streamlit` **tự đọc** `UVICORN_*`/`STREAMLIT_*` từ `.env` — không cần truyền flag.
 
 ## Bước 3: Setup sample data (1 phút)
 
@@ -40,19 +44,35 @@ Output:
 
 ## Bước 4: Chạy ứng dụng (2 phút)
 
-### Terminal 1 - Backend API:
+### Cách A — chạy 2 terminal (dev nhanh)
+
+Terminal 1 — Backend:
 ```bash
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload
 ```
 
-### Terminal 2 - Streamlit UI:
+Terminal 2 — UI:
 ```bash
 streamlit run ui/app.py
 ```
 
+### Cách B — `run.sh` menu (tiện)
+
+```bash
+./run.sh
+# Chọn 3 để chạy cả backend + UI
+```
+
+### Cách C — Docker (đóng gói)
+
+```bash
+docker compose up --build
+# Lần đầu mất ~5 phút (build + load model HF)
+```
+
 ## Bước 5: Test chatbot
 
-Truy cập http://localhost:8501 và thử hỏi:
+Truy cập `http://localhost:${STREAMLIT_SERVER_PORT}` (mặc định 8501) và thử hỏi:
 - "Python là gì?"
 - "Machine Learning có những loại nào?"
 - "Web Development gồm những phần nào?"

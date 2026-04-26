@@ -10,12 +10,11 @@ from sentence_transformers import SentenceTransformer
 from config.settings import settings
 from rag.errors import RetrievalError
 
-
 model = SentenceTransformer(settings.embedding_model)
 client = chromadb.PersistentClient(path=settings.chroma_path)
 collection = client.get_or_create_collection(settings.chroma_collection)
 
-_embedding_cache: "OrderedDict[str, list[float]]" = OrderedDict()
+_embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
 _embedding_cache_lock = Lock()
 
 

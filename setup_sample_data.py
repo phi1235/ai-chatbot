@@ -80,8 +80,9 @@ def setup_sample_data() -> None:
     print(f"Đã tạo {len(chunks)} chunks")
     embed_and_store(chunks)
     print("Đã lưu sample data vào ChromaDB")
-    print("Chạy API: uvicorn api.main:app --reload --port 8000")
-    print("Chạy UI: streamlit run ui/app.py")
+    from config.settings import settings
+    print(f"Chạy API: uvicorn api.main:app --reload --host {settings.backend_host} --port {settings.backend_port}")
+    print(f"Chạy UI: streamlit run ui/app.py --server.address {settings.ui_host} --server.port {settings.ui_port}")
 
 
 if __name__ == "__main__":

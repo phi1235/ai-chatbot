@@ -1,7 +1,8 @@
 import os
 import re
 import unicodedata
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from openai import OpenAI
 

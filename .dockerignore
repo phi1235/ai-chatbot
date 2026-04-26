@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+env/
+
+# Environment - copy thủ công qua docker-compose
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Data đã crawl - sẽ mount qua volume
+data/raw/
+data/clean/
+db/
+
+# Tool state
+.codex/
+.devin/
+.streamlit/
+
+# Tests / CI artifacts
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Git
+.git/
+.github/
+
+# Docs (không cần trong image runtime)
+*.md
+!README.md

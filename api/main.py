@@ -1,5 +1,5 @@
 import json
-from typing import Iterator
+from collections.abc import Iterator
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -10,7 +10,6 @@ from orchestrator import handle_chat, handle_chat_stream, store
 from orchestrator.rate_limiter import is_allowed
 from rag.errors import RetrievalError
 from schemas.chat import ChatRequest, ChatResponse
-
 
 app = FastAPI(title=settings.app_name)
 

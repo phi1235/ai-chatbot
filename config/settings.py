@@ -12,6 +12,18 @@ load_dotenv()
 class Settings:
     app_name: str = os.getenv("APP_NAME", "AI Chatbot Agent")
     environment: str = os.getenv("APP_ENV", "local")
+
+    # Service ports & hosts (đọc từ tên env native của uvicorn/streamlit)
+    backend_host: str = os.getenv("UVICORN_HOST", "0.0.0.0")  # noqa: S104
+    backend_port: int = int(os.getenv("UVICORN_PORT", "8000"))
+    ui_host: str = os.getenv("STREAMLIT_SERVER_ADDRESS", "0.0.0.0")  # noqa: S104
+    ui_port: int = int(os.getenv("STREAMLIT_SERVER_PORT", "8501"))
+    default_api_url: str = os.getenv("DEFAULT_API_URL", "http://localhost:8000")
+
+    # Logging
+    log_format: str = os.getenv("LOG_FORMAT", "")
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+
     api_key_header: str = os.getenv("API_KEY_HEADER", "X-API-Key")
     api_keys: tuple[str, ...] = tuple(
         key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()

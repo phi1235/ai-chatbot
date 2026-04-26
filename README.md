@@ -37,14 +37,27 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Cấu hình API key
+### 3. Cấu hình `.env`
 
-Copy `.env.example` thành `.env` rồi cập nhật OpenRouter API key:
+Copy template rồi điền API key:
 
-```env
-OPENROUTER_API_KEY=your_actual_api_key_here
-OPENROUTER_MODEL=openrouter/free
+```bash
+cp .env.example .env
+# Mở .env, điền OPENROUTER_API_KEY của bạn
 ```
+
+Tất cả config (port, model, log level, ...) đến từ `.env`. Một vài biến quan trọng:
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `OPENROUTER_API_KEY` | — | Key gọi LLM (bắt buộc) |
+| `OPENROUTER_MODEL` | `google/gemma-3-27b-it:free` | Model LLM |
+| `UVICORN_HOST` / `UVICORN_PORT` | `0.0.0.0` / `8000` | Backend bind |
+| `STREAMLIT_SERVER_ADDRESS` / `STREAMLIT_SERVER_PORT` | `0.0.0.0` / `8501` | UI bind |
+| `LOG_FORMAT` | (auto) | `json` / `text` / rỗng (auto theo TTY) |
+| `RETRIEVAL_TOP_K` | `3` | Số chunks retrieve mỗi câu hỏi |
+
+`uvicorn` và `streamlit` **tự đọc các biến `UVICORN_*` / `STREAMLIT_*` từ `.env`**, nên các lệnh chạy không cần truyền `--port`/`--host`.
 
 ## Cấu trúc project
 
@@ -94,7 +107,8 @@ embed_and_store(chunks)
 
 ```bash
 cd ai-chatbot
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload
+# uvicorn tự đọc UVICORN_HOST/UVICORN_PORT từ .env
 ```
 
 ### Bước 3: Chạy Streamlit UI

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from uuid import uuid4
 
 import httpx
 import streamlit as st
 
-DEFAULT_API_URL = "http://localhost:8000"
+DEFAULT_API_URL = os.getenv("DEFAULT_API_URL") or f"http://localhost:{os.getenv('UVICORN_PORT', '8000')}"
 SUGGESTED_QUESTIONS = [
     "Python là gì?",
     "Machine Learning có những loại nào?",
@@ -707,7 +708,7 @@ with st.sidebar:
         st.session_state.api_url = st.text_input(
             "API endpoint",
             value=st.session_state.api_url,
-            help="FastAPI backend, mặc định http://localhost:8000",
+            help=f"FastAPI backend, mặc định {DEFAULT_API_URL}",
         ).rstrip("/")
 
         st.session_state.debug_mode = st.toggle(

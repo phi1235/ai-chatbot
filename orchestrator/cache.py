@@ -28,7 +28,7 @@ class AnswerCache:
     def __init__(self, max_size: int, ttl_seconds: int) -> None:
         self._max_size = max(0, max_size)
         self._ttl = max(0, ttl_seconds)
-        self._store: "OrderedDict[str, CachedAnswer]" = OrderedDict()
+        self._store: OrderedDict[str, CachedAnswer] = OrderedDict()
         self._lock = Lock()
 
     @staticmethod

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from guardrails import apply_input_guardrails, apply_output_guardrails
-from observability import get_logger, metrics_registry
+from observability import (
+    get_logger,
+    metrics_registry,
+    set_request_id,
+)
 from orchestrator import store
 from orchestrator.cache import CachedAnswer, answer_cache
 from orchestrator.memory import session_memory
@@ -52,6 +57,7 @@ def _persist_assistant(
 
 def handle_chat(request: ChatRequest) -> ChatResponse:
     request_id = str(uuid.uuid4())
+    set_request_id(request_id)
     session_id = request.session_id or str(uuid.uuid4())
     started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -165,7 +171,16 @@ def handle_chat(request: ChatRequest) -> ChatResponse:
     latency_ms = _now_ms(started)
     metrics_registry.observe_latency(latency_ms)
     metrics_registry.increment("chat_success_total")
-    logger.info("chat completed", extra={"request_id": request_id})
+    logger.info(
+        "chat completed",
+        extra={
+            "session_id": session_id,
+            "topic": rag_result.detected_topic,
+            "latency_ms": latency_ms,
+            "rewritten": did_rewrite,
+            "retrieval_count": rag_result.retrieval_count,
+        },
+    )
     trace_info = TraceInfo(
         request_id=request_id,
         session_id=session_id,
@@ -201,6 +216,7 @@ def handle_chat_stream(request: ChatRequest) -> Iterator[dict[str, Any]]:
     Caller (FastAPI endpoint) chịu trách nhiệm serialize JSON + flush.
     """
     request_id = str(uuid.uuid4())
+    set_request_id(request_id)
     session_id = request.session_id or str(uuid.uuid4())
     started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -333,7 +349,7 @@ def handle_chat_stream(request: ChatRequest) -> Iterator[dict[str, Any]]:
 
     # Garbage check: model có thể leak prompt rules hoặc trả lời lảm nhảm.
     # Nếu phát hiện -> thay bằng fallback, không cache.
-    from rag.generator import _looks_like_garbage, _fallback_answer
+    from rag.generator import _fallback_answer, _looks_like_garbage
     is_garbage = _looks_like_garbage(raw_answer) if raw_answer else True
     if is_garbage:
         metrics_registry.increment("chat_garbage_output_total")

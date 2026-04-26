@@ -1,0 +1,34 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = [
+    "venv",
+    "__pycache__",
+    "data",
+    "db",
+    ".devin",
+    ".codex",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (line-length đã set 110)
+    "B008",   # function calls in default args (FastAPI Depends/Header)
+    "B905",   # zip without strict= - Python 3.10+ default OK
+    "SIM102", # nested if statements - đôi khi rõ hơn
+    "SIM103", # return condition directly - đôi khi dài dòng dễ đọc hơn
+    "SIM105", # contextlib.suppress - try/except/pass đơn giản hơn
+    "SIM108", # ternary - đôi khi if/else dễ đọc hơn
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "config", "crawler", "guardrails", "observability", "orchestrator", "processor", "rag", "schemas", "ui"]
