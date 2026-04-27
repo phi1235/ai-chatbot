@@ -214,6 +214,42 @@ def run_scheduler_now() -> dict | None:
         return None
 
 
+def get_feedback_list(
+    feedback_type: str | None = None,
+    reviewed: bool | None = None,
+    review_status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if feedback_type:
+            params["feedback_type"] = feedback_type
+        if reviewed is not None:
+            params["reviewed"] = str(reviewed).lower()
+        if review_status:
+            params["review_status"] = review_status
+        r = http().get(f"{api_url()}/admin/feedback", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được feedback: {exc}")
+        return None
+
+
+def review_feedback_item(feedback_id: int, review_note: str, review_status: str) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/feedback/{feedback_id}/review",
+            json={"review_note": review_note, "review_status": review_status},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Review thất bại: {exc}")
+        return None
+
+
 def check_backend() -> bool:
     try:
         r = http().get(f"{api_url()}/health", timeout=2.0)
@@ -575,6 +611,7 @@ with st.sidebar:
             "Sources",
             "Health Check",
             "Freshness Center",
+            "Feedback",
             "Sessions",
             "Maintenance",
         ],
@@ -1558,12 +1595,145 @@ def page_maintenance():
     )
 
 
+# ─── Page: Feedback ─────────────────────────────────────────────────────────
+def page_feedback():
+    render_page_header(
+        "Feedback Review",
+        "Xem va xu ly feedback tu nguoi dung",
+    )
+
+    data = get_feedback_list(limit=200)
+    if not data:
+        st.info("Chua co feedback nao.")
+        return
+
+    summary = data.get("summary", {})
+    items = data.get("items", [])
+
+    # Summary metrics
+    cols = st.columns(4)
+    cols[0].metric("Tong feedback", summary.get("total", 0))
+    cols[1].metric("Down (pending)", summary.get("down_pending", 0))
+    cols[2].metric("Da review", summary.get("reviewed", 0))
+    cols[3].metric("Up / Down", f"{summary.get('total_up', 0)} / {summary.get('total_down', 0)}")
+
+    st.markdown("&nbsp;")
+
+    # Filters
+    fcols = st.columns([1, 1, 1, 1])
+    with fcols[0]:
+        filter_type = st.selectbox(
+            "Loai",
+            options=["Tat ca", "down", "up"],
+            key="fb_filter_type",
+            label_visibility="collapsed",
+        )
+    with fcols[1]:
+        filter_status = st.selectbox(
+            "Trang thai",
+            options=["Tat ca", "pending", "reviewed", "actioned"],
+            key="fb_filter_status",
+            label_visibility="collapsed",
+        )
+    with fcols[2]:
+        filter_limit = st.selectbox(
+            "So luong",
+            options=[20, 50, 100],
+            index=1,
+            key="fb_filter_limit",
+            label_visibility="collapsed",
+        )
+    with fcols[3]:
+        if st.button("Lam moi", use_container_width=True):
+            st.rerun()
+
+    # Re-fetch with filters
+    ft = filter_type if filter_type != "Tat ca" else None
+    fs = filter_status if filter_status != "Tat ca" else None
+    if ft or fs or filter_limit != 50:
+        data = get_feedback_list(
+            feedback_type=ft,
+            review_status=fs,
+            limit=filter_limit,
+        )
+        if not data:
+            return
+        items = data.get("items", [])
+
+    if not items:
+        st.info("Khong co feedback nao phu hop bo loc.")
+        return
+
+    st.caption(f"Hien thi {len(items)} feedback")
+
+    # Render feedback list
+    for item in items:
+        fb_id = item["id"]
+        fb_type = item["feedback_type"]
+        status = item["review_status"]
+        created = datetime.fromtimestamp(item["created_at"]).strftime("%d/%m %H:%M")
+
+        type_badge = "DOWN" if fb_type == "down" else "UP"
+        type_color = "var(--danger)" if fb_type == "down" else "var(--ok)"
+        status_badge = status.upper()
+
+        header_html = (
+            f'<div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.3rem;">'
+            f'<span style="font-weight:600; font-size:0.75rem; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{type_color}15; color:{type_color}">{type_badge}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{status_badge}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{created}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">#{fb_id}</span>'
+            f'</div>'
+        )
+
+        with st.expander(f"{'[DOWN]' if fb_type == 'down' else '[UP]'} {item['question'][:80]}"):
+            st.markdown(header_html, unsafe_allow_html=True)
+
+            st.markdown("**Cau hoi:**")
+            st.text(item["question"])
+
+            st.markdown("**Cau tra loi:**")
+            st.text(item["answer"][:500] + ("..." if len(item["answer"]) > 500 else ""))
+
+            if item.get("note"):
+                st.markdown(f"**Note nguoi dung:** {item['note']}")
+
+            if item.get("session_id"):
+                st.caption(f"Session: {item['session_id'][:8]}")
+
+            if item["reviewed"]:
+                st.success(
+                    f"Da review ({item['review_status']})"
+                    + (f" — {item['review_note']}" if item.get("review_note") else "")
+                )
+            else:
+                # Review form
+                with st.form(key=f"review-form-{fb_id}"):
+                    note_input = st.text_input(
+                        "Review note",
+                        placeholder="Ghi chu ngan (optional)",
+                        key=f"review-note-{fb_id}",
+                    )
+                    status_input = st.selectbox(
+                        "Status",
+                        options=["reviewed", "actioned"],
+                        key=f"review-status-{fb_id}",
+                    )
+                    if st.form_submit_button("Danh dau da review", type="primary"):
+                        result = review_feedback_item(fb_id, note_input, status_input)
+                        if result:
+                            st.success("Da cap nhat!")
+                            st.rerun()
+
+
 # ─── Render selected page ───────────────────────────────────────────────────
 PAGE_RENDERERS = {
     "Dashboard": page_dashboard,
     "Sources": page_sources,
     "Health Check": page_health,
     "Freshness Center": page_freshness_center,
+    "Feedback": page_feedback,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,
 }

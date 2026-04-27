@@ -205,6 +205,48 @@ def render_trace(trace: dict) -> None:
             st.json(trace)
 
 
+def submit_feedback(msg_index: int, feedback_type: str, question: str, answer: str) -> None:
+    """Send feedback to backend API."""
+    try:
+        payload = {
+            "session_id": st.session_state.session_id,
+            "message_id": str(msg_index),
+            "question": question,
+            "answer": answer,
+            "feedback_type": feedback_type,
+        }
+        r = get_http_client().post(
+            f"{st.session_state.api_url}/feedback",
+            json=payload,
+            timeout=5.0,
+        )
+        if r.status_code == 200:
+            st.session_state[f"feedback-{st.session_state.session_id}-{msg_index}"] = feedback_type
+    except Exception:
+        pass
+
+
+def render_feedback_buttons(msg_index: int, question: str, answer: str) -> None:
+    """Render inline feedback buttons (Huu ich / Chua on) for an assistant message."""
+    feedback_key = f"feedback-{st.session_state.session_id}-{msg_index}"
+    existing = st.session_state.get(feedback_key)
+
+    if existing:
+        label = "Huu ich" if existing == "up" else "Chua on"
+        st.caption(f"Da danh gia: {label}")
+        return
+
+    cols = st.columns([1, 1, 6])
+    with cols[0]:
+        if st.button("Huu ich", key=f"fb-up-{msg_index}", help="Cam on!"):
+            submit_feedback(msg_index, "up", question, answer)
+            st.rerun()
+    with cols[1]:
+        if st.button("Chua on", key=f"fb-down-{msg_index}", help="Can cai thien"):
+            submit_feedback(msg_index, "down", question, answer)
+            st.rerun()
+
+
 def add_user_message(content: str) -> None:
     st.session_state.messages.append({"role": "user", "content": content})
 
@@ -866,7 +908,7 @@ if not st.session_state.messages:
     render_suggested_questions()
 
 # ─── Conversation ───────────────────────────────────────────────────────────
-for msg in st.session_state.messages:
+for idx, msg in enumerate(st.session_state.messages):
     avatar = "🧑" if msg["role"] == "user" else "✨"
     with st.chat_message(msg["role"], avatar=avatar):
         if msg["role"] == "assistant" and msg.get("is_error"):
@@ -877,6 +919,15 @@ for msg in st.session_state.messages:
             if msg.get("show_citations"):
                 render_citations(msg.get("citations", []))
             render_trace(msg.get("trace", {}))
+            # Feedback buttons - find the preceding user question
+            if not msg.get("is_error"):
+                prev_question = ""
+                for prev_idx in range(idx - 1, -1, -1):
+                    if st.session_state.messages[prev_idx]["role"] == "user":
+                        prev_question = st.session_state.messages[prev_idx]["content"]
+                        break
+                if prev_question:
+                    render_feedback_buttons(idx, prev_question, msg["content"])
 
 # Stream assistant message cho pending prompt (xuất hiện ngay sau user message ở loop trên)
 process_pending_prompt()

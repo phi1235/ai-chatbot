@@ -476,3 +476,103 @@ async def run_scheduler_now():
     except Exception as exc:
         logger.error("Manual scheduler run failed", extra={"error": str(exc)}, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Scheduler run failed: {exc}") from exc
+
+
+# ─── Feedback ────────────────────────────────────────────────────────────────
+class FeedbackRequest(BaseModel):
+    session_id: str | None = None
+    message_id: str | None = None
+    question: str
+    answer: str
+    feedback_type: str  # 'up' | 'down'
+    note: str | None = None
+
+
+class ReviewRequest(BaseModel):
+    review_note: str | None = None
+    review_status: str = "reviewed"  # 'pending' | 'reviewed' | 'actioned'
+
+
+@router.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Submit feedback (up/down) for a chatbot answer."""
+    from orchestrator import feedback_store
+
+    if req.feedback_type not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="feedback_type phải là 'up' hoặc 'down'.")
+    if not (req.question or "").strip() or not (req.answer or "").strip():
+        raise HTTPException(status_code=400, detail="question và answer không được trống.")
+
+    try:
+        feedback_id = feedback_store.add_feedback(
+            question=req.question,
+            answer=req.answer,
+            feedback_type=req.feedback_type,
+            session_id=req.session_id,
+            message_id=req.message_id,
+            note=req.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"id": feedback_id, "feedback_type": req.feedback_type}
+
+
+@router.get("/feedback")
+async def list_feedback(
+    feedback_type: str | None = None,
+    reviewed: bool | None = None,
+    session_id: str | None = None,
+    review_status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List feedbacks with optional filters."""
+    from orchestrator import feedback_store
+
+    if feedback_type and feedback_type not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="feedback_type phải là 'up' hoặc 'down'.")
+    if review_status and review_status not in ("pending", "reviewed", "actioned"):
+        raise HTTPException(status_code=400, detail="review_status không hợp lệ.")
+
+    items = feedback_store.list_feedbacks(
+        feedback_type=feedback_type,
+        reviewed=reviewed,
+        session_id=session_id,
+        review_status=review_status,
+        limit=limit,
+        offset=offset,
+    )
+    summary = feedback_store.count_summary()
+    return {
+        "count": len(items),
+        "summary": summary,
+        "items": items,
+    }
+
+
+@router.post("/feedback/{feedback_id}/review")
+async def review_feedback(feedback_id: int, req: ReviewRequest):
+    """Mark a feedback as reviewed with optional note."""
+    from orchestrator import feedback_store
+
+    existing = feedback_store.get_feedback(feedback_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Feedback không tồn tại.")
+
+    if req.review_status not in ("pending", "reviewed", "actioned"):
+        raise HTTPException(status_code=400, detail="review_status không hợp lệ.")
+
+    updated = feedback_store.mark_reviewed(
+        feedback_id,
+        review_note=req.review_note,
+        review_status=req.review_status,
+    )
+    return updated
+
+
+@router.get("/feedback/summary")
+async def feedback_summary():
+    """Quick summary counts for feedback dashboard."""
+    from orchestrator import feedback_store
+    return feedback_store.count_summary()

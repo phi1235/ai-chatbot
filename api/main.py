@@ -5,6 +5,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel as _BaseModel
 
 from api.admin import router as admin_router
 from config.settings import settings
@@ -266,3 +267,38 @@ async def rename_session(session_id: str, body: dict):
         raise HTTPException(status_code=400, detail="title không được để trống.")
     store.update_title(session_id, title)
     return {"id": session_id, "title": title}
+
+
+# ─── Feedback (user-facing) ─────────────────────────────────────────────────
+class _FeedbackSubmit(_BaseModel):
+    session_id: str | None = None
+    message_id: str | None = None
+    question: str
+    answer: str
+    feedback_type: str  # 'up' | 'down'
+    note: str | None = None
+
+
+@app.post("/feedback")
+async def submit_feedback(req: _FeedbackSubmit):
+    """User-facing endpoint to submit feedback for a chatbot answer."""
+    from orchestrator import feedback_store
+
+    if req.feedback_type not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="feedback_type phải là 'up' hoặc 'down'.")
+    if not (req.question or "").strip() or not (req.answer or "").strip():
+        raise HTTPException(status_code=400, detail="question và answer không được trống.")
+
+    try:
+        feedback_id = feedback_store.add_feedback(
+            question=req.question,
+            answer=req.answer,
+            feedback_type=req.feedback_type,
+            session_id=req.session_id,
+            message_id=req.message_id,
+            note=req.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"id": feedback_id, "feedback_type": req.feedback_type}
