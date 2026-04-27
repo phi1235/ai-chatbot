@@ -278,3 +278,67 @@ def test_health_check_snapshot_saved_zero_when_empty(client):
     r = client.post("/admin/health-check", json={})
     assert r.status_code == 200
     assert r.json()["snapshot_saved"] == 0
+
+
+def test_scheduler_status_defaults(client):
+    r = client.get("/admin/scheduler/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["enabled"] is False
+    assert data["interval_seconds"] == 3600
+    assert data["alert_state"] == "OK"
+    assert data["is_running"] in {True, False}
+
+
+def test_scheduler_config_update(client):
+    r = client.post("/admin/scheduler/config", json={"enabled": True, "interval_seconds": 900})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["enabled"] is True
+    assert data["interval_seconds"] == 900
+    assert data["next_run_time"] is not None
+
+
+def test_scheduler_config_rejects_small_interval(client):
+    r = client.post("/admin/scheduler/config", json={"enabled": True, "interval_seconds": 30})
+    assert r.status_code == 400
+
+
+def test_scheduler_run_now(client):
+    summary_obj = SimpleNamespace(
+        total=2,
+        ok=1,
+        stale=1,
+        dead=0,
+        redirect=0,
+        unknown=0,
+        results=[
+            SimpleNamespace(
+                location="https://example.com/ok",
+                topic="tech",
+                title="OK",
+                status="OK",
+                detail="ok",
+                final_url=None,
+                http_status=200,
+                diff_chars=None,
+            ),
+            SimpleNamespace(
+                location="https://example.com/stale",
+                topic="tech",
+                title="STALE",
+                status="STALE",
+                detail="changed",
+                final_url=None,
+                http_status=200,
+                diff_chars=None,
+            ),
+        ],
+    )
+    with patch("tools.check_sources.check_sources", return_value=summary_obj):
+        r = client.post("/admin/scheduler/run-now")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 2
+    assert data["snapshot_saved"] == 2
+    assert data["alert_state"] == "WARNING"

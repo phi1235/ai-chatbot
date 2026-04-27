@@ -19,8 +19,10 @@ app.include_router(admin_router)
 
 
 @app.on_event("startup")
-def _startup_warmup() -> None:
-    """Preload embedding model + ChromaDB + BM25 index để request đầu không cold-start."""
+async def _startup_warmup() -> None:
+    """Preload embedding model + ChromaDB + BM25 index để request đầu không cold-start.
+    Also start the background scheduler for periodic health checks.
+    """
     try:
         from rag.retriever import warmup
         warmup()
@@ -38,6 +40,21 @@ def _startup_warmup() -> None:
             rerank_warmup()
         except Exception:
             pass
+    try:
+        from orchestrator import scheduler
+        await scheduler.start_scheduler_task()
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
+async def _shutdown_cleanup() -> None:
+    """Stop background tasks on shutdown."""
+    try:
+        from orchestrator import scheduler
+        await scheduler.stop_scheduler_task()
+    except Exception:
+        pass
 
 
 def _check_gateway(req: ChatRequest, request: Request, x_api_key: str | None) -> None:

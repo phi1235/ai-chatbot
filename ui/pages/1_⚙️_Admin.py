@@ -178,6 +178,42 @@ def batch_recrawl(urls: list[str]) -> dict | None:
         return None
 
 
+def get_scheduler_status() -> dict | None:
+    try:
+        r = http().get(f"{api_url()}/admin/scheduler/status")
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được trạng thái scheduler: {exc}")
+        return None
+
+
+def update_scheduler_config(enabled: bool, interval_seconds: int) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/scheduler/config",
+            json={"enabled": enabled, "interval_seconds": interval_seconds},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cập nhật scheduler thất bại: {exc}")
+        return None
+
+
+def run_scheduler_now() -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/scheduler/run-now",
+            timeout=httpx.Timeout(300.0, connect=5.0, read=300.0),
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Chạy scheduler thất bại: {exc}")
+        return None
+
+
 def check_backend() -> bool:
     try:
         r = http().get(f"{api_url()}/health", timeout=2.0)
@@ -1223,8 +1259,80 @@ def page_health():
 def page_freshness_center():
     render_page_header(
         "Freshness Center",
-        "Theo dõi độ tươi của sources và re-crawl có chọn lọc",
+        "Theo dõi độ tươi của sources, scheduler và re-crawl có chọn lọc",
     )
+
+    scheduler_payload = get_scheduler_status() or {}
+    scheduler_alert_state = scheduler_payload.get("alert_state") or "OK"
+    scheduler_last_summary = scheduler_payload.get("last_summary") or {}
+    scheduler_last_run = scheduler_payload.get("last_run_time")
+    scheduler_next_run = scheduler_payload.get("next_run_time")
+
+    with st.expander("Scheduler & Alerts", expanded=True):
+        current_enabled = bool(scheduler_payload.get("enabled", False))
+        current_interval = int(scheduler_payload.get("interval_seconds") or 3600)
+        interval_options = [300, 900, 1800, 3600, 7200, 21600, 43200, 86400]
+
+        sched_cols = st.columns([1.2, 1.3, 1.3, 2.2])
+        with sched_cols[0]:
+            enabled_choice = st.toggle("Bật scheduler", value=current_enabled, key="scheduler_enabled_toggle")
+        with sched_cols[1]:
+            interval_choice = st.selectbox(
+                "Chu kỳ",
+                options=interval_options,
+                index=interval_options.index(current_interval) if current_interval in interval_options else 3,
+                format_func=lambda v: {
+                    300: "5 phút",
+                    900: "15 phút",
+                    1800: "30 phút",
+                    3600: "1 giờ",
+                    7200: "2 giờ",
+                    21600: "6 giờ",
+                    43200: "12 giờ",
+                    86400: "24 giờ",
+                }[v],
+                key="scheduler_interval_select",
+            )
+        with sched_cols[2]:
+            if st.button("Lưu scheduler", use_container_width=True):
+                updated = update_scheduler_config(enabled_choice, interval_choice)
+                if updated:
+                    st.success("Đã cập nhật scheduler.")
+                    st.rerun()
+        with sched_cols[3]:
+            if st.button("Chạy ngay", type="primary", use_container_width=True):
+                with st.spinner("Đang chạy scheduler..."):
+                    run_now_result = run_scheduler_now()
+                if run_now_result:
+                    st.success(
+                        f"Đã chạy xong. {run_now_result.get('snapshot_saved', 0)} records saved. "
+                        f"Alert: {run_now_result.get('alert_state', 'OK')}"
+                    )
+                    st.session_state.pop("freshness_records_cache", None)
+                    st.rerun()
+
+        info_cols = st.columns(4)
+        info_cols[0].metric("Scheduler", "ON" if current_enabled else "OFF")
+        info_cols[1].metric("Alert", scheduler_alert_state)
+        info_cols[2].metric(
+            "Last run",
+            datetime.fromtimestamp(float(scheduler_last_run)).strftime("%Y-%m-%d %H:%M:%S")
+            if scheduler_last_run else "-",
+        )
+        info_cols[3].metric(
+            "Next run",
+            datetime.fromtimestamp(float(scheduler_next_run)).strftime("%Y-%m-%d %H:%M:%S")
+            if scheduler_next_run else "-",
+        )
+
+        if scheduler_last_summary:
+            summary_cols = st.columns(6)
+            summary_cols[0].metric("Total", scheduler_last_summary.get("total", 0))
+            summary_cols[1].metric("OK", scheduler_last_summary.get("ok", 0))
+            summary_cols[2].metric("Stale", scheduler_last_summary.get("stale", 0))
+            summary_cols[3].metric("Dead", scheduler_last_summary.get("dead", 0))
+            summary_cols[4].metric("Redirect", scheduler_last_summary.get("redirect", 0))
+            summary_cols[5].metric("Error", scheduler_last_summary.get("unknown", 0))
 
     topics = get_sources()
     topic_names = ["(tất cả)"] + [t["topic"] for t in topics]

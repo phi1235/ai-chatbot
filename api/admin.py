@@ -388,3 +388,91 @@ async def rebuild_bm25():
     from rag.hybrid import rebuild_from_chroma
     idx = rebuild_from_chroma()
     return {"chunks_indexed": len(idx.chunks)}
+
+
+# ─── Scheduler & Alerts ─────────────────────────────────────────────────────
+@router.get("/scheduler/status")
+async def get_scheduler_status():
+    """Get scheduler current status: enabled, interval, last run, next run, alerts."""
+    from orchestrator import scheduler, scheduler_state
+
+    state = scheduler_state.read_state()
+    return {
+        "enabled": state.enabled,
+        "interval_seconds": state.interval_seconds,
+        "last_run_time": state.last_run_time,
+        "next_run_time": state.next_run_time,
+        "last_summary": state.last_summary,
+        "alert_state": state.alert_state,
+        "is_running": scheduler.is_running(),
+    }
+
+
+@router.post("/scheduler/config")
+async def update_scheduler_config(body: dict = Body(...)):
+    """Update scheduler enabled/interval.
+    Body: {"enabled": bool, "interval_seconds": int}
+    """
+    from orchestrator import scheduler_state
+
+    enabled = body.get("enabled")
+    interval = body.get("interval_seconds")
+
+    if enabled is None and interval is None:
+        raise HTTPException(status_code=400, detail="Cần ít nhất 'enabled' hoặc 'interval_seconds'.")
+    if interval is not None:
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="interval_seconds phải là số nguyên.") from exc
+        if interval < 60:
+            raise HTTPException(status_code=400, detail="interval_seconds phải >= 60.")
+
+    state = scheduler_state.update_state(
+        enabled=enabled if enabled is not None else None,
+        interval_seconds=interval if interval is not None else None,
+    )
+
+    logger.info(
+        "Scheduler config updated",
+        extra={
+            "enabled": state.enabled,
+            "interval_seconds": state.interval_seconds,
+        },
+    )
+    return {
+        "enabled": state.enabled,
+        "interval_seconds": state.interval_seconds,
+        "next_run_time": state.next_run_time,
+    }
+
+
+@router.post("/scheduler/run-now")
+async def run_scheduler_now():
+    """Manually trigger a health-check run immediately."""
+    from orchestrator import scheduler
+
+    try:
+        summary = await scheduler.run_scheduler_cycle()
+        logger.info(
+            "Manual scheduler run completed",
+            extra={
+                "total": summary.get("total"),
+                "ok": summary.get("ok"),
+                "alert_state": summary.get("alert_state"),
+            },
+        )
+        return {
+            "total": summary.get("total"),
+            "ok": summary.get("ok"),
+            "stale": summary.get("stale"),
+            "dead": summary.get("dead"),
+            "redirect": summary.get("redirect"),
+            "unknown": summary.get("unknown"),
+            "snapshot_saved": summary.get("snapshot_saved"),
+            "alert_state": summary.get("alert_state"),
+            "alert_reason": summary.get("alert_reason"),
+        }
+    except Exception as exc:
+        logger.error("Manual scheduler run failed", extra={"error": str(exc)}, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Scheduler run failed: {exc}") from exc
