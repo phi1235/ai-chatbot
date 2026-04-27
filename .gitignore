@@ -7,21 +7,15 @@ __pycache__/
 venv/
 env/
 ENV/
-*.json
 
-# Environment variables
+# Environment variables (.env.example được track để dev mới biết cần config gì)
 .env
-.env.*
+.env.bak
 
-# ChromaDB & SQLite (vector store + conversation history với dữ liệu cá nhân)
-db/chroma_store/
-db/conversations.sqlite
-db/conversations.sqlite-*
-db/*.db
-db/*.db-shm
-db/*.db-wal
-db/*.pkl
-db/bm25_index.pkl
+# ChromaDB & SQLite & runtime data (vector store + conversation history với dữ liệu cá nhân)
+# Toàn bộ db/ là data sinh ra khi chạy, không track
+db/*
+!db/.gitkeep
 
 # Crawled data (HTML/text raw từ docs bên thứ 3 - copyright của họ + dung lượng lớn)
 # Người clone repo sẽ tự `python ingest.py` để tạo lại data của riêng mình
@@ -37,7 +31,7 @@ data/clean/
 .idea/
 *.swp
 *.swo
-*.md
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,98 @@
+[
+  {
+    "location": "https://kubernetes.io/docs/concepts/overview/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Overview"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/architecture/nodes/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Nodes"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/pods/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Pods"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Deployments"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - ReplicaSet"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - StatefulSets"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - DaemonSet"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/workloads/controllers/job/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Jobs"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/services-networking/service/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Service"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/services-networking/ingress/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Ingress"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/storage/persistent-volumes/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Persistent Volumes"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/configuration/configmap/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - ConfigMaps"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/configuration/secret/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Secrets"
+  },
+  {
+    "location": "https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Namespaces"
+  },
+  {
+    "location": "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - Horizontal Pod Autoscaling"
+  },
+  {
+    "location": "https://kubernetes.io/docs/reference/access-authn-authz/rbac/",
+    "topic": "kubernetes",
+    "source": "website",
+    "title": "Kubernetes - RBAC Authorization"
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "location": "https://react.dev/learn",
+    "topic": "react",
+    "source": "website",
+    "title": "Quick Start - React"
+  },
+  {
+    "location": "https://react.dev/learn/thinking-in-react",
+    "topic": "react",
+    "source": "website",
+    "title": "Thinking in React"
+  },
+  {
+    "location": "https://react.dev/learn/your-first-component",
+    "topic": "react",
+    "source": "website",
+    "title": "Your First Component"
+  },
+  {
+    "location": "https://react.dev/learn/passing-props-to-a-component",
+    "topic": "react",
+    "source": "website",
+    "title": "Passing Props to a Component"
+  },
+  {
+    "location": "https://react.dev/learn/conditional-rendering",
+    "topic": "react",
+    "source": "website",
+    "title": "Conditional Rendering"
+  },
+  {
+    "location": "https://react.dev/learn/rendering-lists",
+    "topic": "react",
+    "source": "website",
+    "title": "Rendering Lists"
+  },
+  {
+    "location": "https://react.dev/learn/state-a-components-memory",
+    "topic": "react",
+    "source": "website",
+    "title": "State: A Component's Memory"
+  },
+  {
+    "location": "https://react.dev/learn/responding-to-events",
+    "topic": "react",
+    "source": "website",
+    "title": "Responding to Events"
+  },
+  {
+    "location": "https://react.dev/learn/managing-state",
+    "topic": "react",
+    "source": "website",
+    "title": "Managing State"
+  },
+  {
+    "location": "https://react.dev/learn/synchronizing-with-effects",
+    "topic": "react",
+    "source": "website",
+    "title": "Synchronizing with Effects"
+  },
+  {
+    "location": "https://react.dev/reference/react/useState",
+    "topic": "react",
+    "source": "website",
+    "title": "useState Hook Reference"
+  },
+  {
+    "location": "https://react.dev/reference/react/useEffect",
+    "topic": "react",
+    "source": "website",
+    "title": "useEffect Hook Reference"
+  },
+  {
+    "location": "https://react.dev/reference/react/useContext",
+    "topic": "react",
+    "source": "website",
+    "title": "useContext Hook Reference"
+  },
+  {
+    "location": "https://react.dev/reference/react/useReducer",
+    "topic": "react",
+    "source": "website",
+    "title": "useReducer Hook Reference"
+  },
+  {
+    "location": "https://react.dev/reference/react/useMemo",
+    "topic": "react",
+    "source": "website",
+    "title": "useMemo Hook Reference"
+  }
+]

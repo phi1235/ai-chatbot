@@ -1,0 +1,92 @@
+[
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-sql.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - SQL Language Introduction"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-table.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Creating a New Table"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-select.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Querying a Table (SELECT)"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-join.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Joins Between Tables"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-agg.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Aggregate Functions"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-update.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Updates"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-delete.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Deletions"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-views.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Views"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-fk.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Foreign Keys"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-transactions.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Transactions"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/tutorial-window.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Window Functions"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/datatype.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Data Types"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/ddl-constraints.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Constraints"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/indexes-intro.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - Indexes Introduction"
+  },
+  {
+    "location": "https://www.postgresql.org/docs/current/queries-with.html",
+    "topic": "postgresql",
+    "source": "website",
+    "title": "PostgreSQL - WITH Queries (CTE)"
+  }
+]

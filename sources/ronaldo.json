@@ -1,0 +1,32 @@
+[
+  {
+    "location": "https://en.wikipedia.org/wiki/Cristiano_Ronaldo",
+    "topic": "ronaldo",
+    "source": "website",
+    "title": "Cristiano Ronaldo - Wikipedia"
+  },
+  {
+    "location": "https://www.britannica.com/biography/Cristiano-Ronaldo",
+    "topic": "ronaldo",
+    "source": "website",
+    "title": "Cristiano Ronaldo - Britannica"
+  },
+  {
+    "location": "https://cristianoronaldo.com/",
+    "topic": "ronaldo",
+    "source": "website",
+    "title": "Cristiano Ronaldo Official Website"
+  },
+  {
+    "location": "https://www.uefa.com/european-qualifiers/teams/players/63706--cristiano-ronaldo/",
+    "topic": "ronaldo",
+    "source": "website",
+    "title": "Cristiano Ronaldo - UEFA Profile"
+  },
+  {
+    "location": "https://www.fifa.com/en/tournaments/mens/worldcup/articles/26-superstars-cristiano-ronaldo",
+    "topic": "ronaldo",
+    "source": "website",
+    "title": "Cristiano Ronaldo - FIFA Profile"
+  }
+]

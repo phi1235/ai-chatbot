@@ -1,0 +1,62 @@
+[
+  {
+    "location": "https://docs.spring.io/spring-boot/",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Boot Overview"
+  },
+  {
+    "location": "https://docs.spring.io/spring-boot/docs/3.1.1/reference/html/index.html",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Boot Reference Documentation"
+  },
+  {
+    "location": "https://spring.io/guides/gs/spring-boot",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Building an Application with Spring Boot"
+  },
+  {
+    "location": "https://spring.io/guides/gs/rest-service/",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Building a RESTful Web Service"
+  },
+  {
+    "location": "https://spring.io/guides/gs/accessing-data-jpa",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Accessing Data with JPA"
+  },
+  {
+    "location": "https://spring.io/guides/gs/securing-web/",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Securing a Web Application"
+  },
+  {
+    "location": "https://docs.spring.io/spring-boot/reference/web/spring-security.html",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Boot Security Reference"
+  },
+  {
+    "location": "https://docs.spring.io/spring-data/jpa/reference/",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Data JPA Reference"
+  },
+  {
+    "location": "https://docs.spring.io/spring-boot/how-to/data-access.html",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Boot Data Access How-to"
+  },
+  {
+    "location": "https://docs.spring.io/spring-boot/docs/current-SNAPSHOT/reference/html/actuator.html",
+    "topic": "springboot",
+    "source": "website",
+    "title": "Spring Boot Actuator Reference"
+  }
+]

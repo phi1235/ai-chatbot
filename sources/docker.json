@@ -1,0 +1,26 @@
+[
+  {
+    "location": "https://docs.docker.com/get-started/",
+    "topic": "docker",
+    "source": "website",
+    "title": "Docker Get Started"
+  },
+  {
+    "location": "https://docs.docker.com/engine/docker-overview/",
+    "topic": "docker",
+    "source": "website",
+    "title": "What is Docker?"
+  },
+  {
+    "location": "https://docs.docker.com/compose/gettingstarted/",
+    "topic": "docker",
+    "source": "website",
+    "title": "Docker Compose Quickstart"
+  },
+  {
+    "location": "https://docs.docker.com/reference/cli/docker/compose/",
+    "topic": "docker",
+    "source": "website",
+    "title": "docker compose CLI reference"
+  }
+]
