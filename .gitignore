@@ -38,3 +38,6 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+
+# Local task handoff / ticket notes (do not commit planning docs)
+docs/tickets/*.md
