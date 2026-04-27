@@ -144,6 +144,40 @@ def rebuild_bm25() -> dict | None:
         return None
 
 
+def get_freshness(
+    status: str | None = None,
+    topic: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if topic:
+            params["topic"] = topic
+        r = http().get(f"{api_url()}/admin/freshness", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được freshness data: {exc}")
+        return None
+
+
+def batch_recrawl(urls: list[str]) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/freshness/recrawl",
+            json={"urls": urls},
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Batch recrawl thất bại: {exc}")
+        return None
+
+
 def check_backend() -> bool:
     try:
         r = http().get(f"{api_url()}/health", timeout=2.0)
@@ -504,6 +538,7 @@ with st.sidebar:
             "Dashboard",
             "Sources",
             "Health Check",
+            "Freshness Center",
             "Sessions",
             "Maintenance",
         ],
@@ -545,13 +580,15 @@ def render_page_header(title: str, subtitle: str = "", actions: callable = None)
 
 def status_row_html(r: dict) -> str:
     cls = r["status"].lower()
-    icon = {"OK": "✓", "STALE": "⚠", "DEAD": "✗", "REDIRECT": "↪", "UNKNOWN": "?"}.get(r["status"], "·")
+    topic = r.get("topic") or "-"
+    location = r.get("location") or r.get("url") or ""
+    detail = r.get("detail") or r.get("notes") or r.get("error_message") or ""
     return (
         f'<div class="status-row {cls}">'
-        f'  <span class="badge">{icon} {r["status"]}</span>'
-        f'  <span class="topic">[{r["topic"]}]</span>'
-        f'  <span class="url">{r["location"][:90]}</span>'
-        f'  <span class="detail">{r["detail"]}</span>'
+        f'  <span class="badge">{r["status"]}</span>'
+        f'  <span class="topic">[{topic}]</span>'
+        f'  <span class="url">{location[:90]}</span>'
+        f'  <span class="detail">{detail}</span>'
         f'</div>'
     )
 
@@ -1182,6 +1219,168 @@ def page_health():
             st.markdown(status_row_html(r), unsafe_allow_html=True)
 
 
+# ─── Page: Freshness Center ────────────────────────────────────────────────
+def page_freshness_center():
+    render_page_header(
+        "Freshness Center",
+        "Theo dõi độ tươi của sources và re-crawl có chọn lọc",
+    )
+
+    topics = get_sources()
+    topic_names = ["(tất cả)"] + [t["topic"] for t in topics]
+    status_options = ["(tất cả)", "OK", "STALE", "DEAD", "REDIRECT", "ERROR"]
+
+    fcols = st.columns([2, 2, 1, 1])
+    with fcols[0]:
+        selected_topic = st.selectbox("Topic", topic_names, key="freshness_topic_filter")
+    with fcols[1]:
+        selected_status = st.selectbox("Status", status_options, key="freshness_status_filter")
+    with fcols[2]:
+        limit = st.selectbox("Số dòng", [25, 50, 100, 200], index=1, key="freshness_limit")
+    with fcols[3]:
+        refresh_clicked = st.button("Làm mới", use_container_width=True)
+
+    action_cols = st.columns([1.2, 1.2, 3])
+    with action_cols[0]:
+        if st.button("Chạy health-check", type="primary", use_container_width=True):
+            topic_arg = None if selected_topic == "(tất cả)" else selected_topic
+            with st.spinner("Đang chạy health-check..."):
+                health_result = run_health(topic_arg)
+            if health_result:
+                saved = health_result.get("snapshot_saved", 0)
+                st.success(f"Health-check xong. Đã lưu {saved} records.")
+                st.session_state.pop("freshness_records_cache", None)
+    with action_cols[1]:
+        clear_selection = st.button("Bỏ chọn", use_container_width=True)
+    if refresh_clicked:
+        st.session_state.pop("freshness_records_cache", None)
+
+    topic_arg = None if selected_topic == "(tất cả)" else selected_topic
+    status_arg = None if selected_status == "(tất cả)" else selected_status
+    cache_key = f"{topic_arg}|{status_arg}|{limit}"
+
+    if st.session_state.get("freshness_records_cache_key") != cache_key:
+        st.session_state.pop("freshness_records_cache", None)
+        st.session_state["freshness_records_cache_key"] = cache_key
+
+    if "freshness_records_cache" not in st.session_state:
+        st.session_state["freshness_records_cache"] = get_freshness(
+            status=status_arg,
+            topic=topic_arg,
+            limit=limit,
+            offset=0,
+        )
+
+    payload = st.session_state.get("freshness_records_cache") or {}
+    records = payload.get("records", [])
+
+    if not records:
+        st.info("Chưa có freshness records với bộ lọc hiện tại.")
+        return
+
+    sel_key = "freshness_selected_urls"
+    if sel_key not in st.session_state:
+        st.session_state[sel_key] = set()
+    selected_urls: set[str] = set(st.session_state[sel_key])
+
+    if clear_selection:
+        st.session_state[sel_key] = set()
+        selected_urls = set()
+
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Records", len(records))
+    summary_cols[1].metric("Selected", len(selected_urls))
+    summary_cols[2].metric("Topic", topic_arg or "All")
+    summary_cols[3].metric("Status", status_arg or "All")
+
+    toolbar_cols = st.columns([1.4, 1.4, 2.2, 3])
+    with toolbar_cols[0]:
+        if st.button("Chọn lỗi/stale", use_container_width=True):
+            st.session_state[sel_key] = {
+                r["url"]
+                for r in records
+                if r.get("status") in {"STALE", "DEAD", "ERROR", "REDIRECT"} and r.get("url")
+            }
+            st.rerun()
+    with toolbar_cols[1]:
+        if st.button("Chọn tất cả", use_container_width=True):
+            st.session_state[sel_key] = {r["url"] for r in records if r.get("url")}
+            st.rerun()
+    with toolbar_cols[2]:
+        if st.button(
+            f"Re-crawl đã chọn ({len(selected_urls)})",
+            type="primary",
+            use_container_width=True,
+            disabled=len(selected_urls) == 0,
+        ):
+            with st.spinner(f"Đang re-crawl {len(selected_urls)} URLs..."):
+                result = batch_recrawl(sorted(selected_urls))
+            if result:
+                st.success(
+                    f"Re-crawl xong: {result['documents_crawled']} docs, "
+                    f"{result['chunks_indexed']} chunks."
+                )
+                missing_count = result.get("missing_count", 0)
+                if missing_count:
+                    st.warning(f"Có {missing_count} URLs không còn trong sources.")
+                st.session_state[sel_key] = set()
+                st.session_state.pop("freshness_records_cache", None)
+
+    table_rows: list[dict] = []
+    for row in records:
+        url = row.get("url", "")
+        checked = url in selected_urls
+        checked_at = row.get("checked_at")
+        checked_text = ""
+        if checked_at:
+            try:
+                checked_text = datetime.fromtimestamp(float(checked_at)).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                checked_text = str(checked_at)
+        table_rows.append(
+            {
+                "Chọn": checked,
+                "Status": row.get("status", ""),
+                "Topic": row.get("topic") or "",
+                "URL": url,
+                "HTTP": row.get("http_status") or "",
+                "Checked at": checked_text,
+                "Notes": row.get("error_message") or row.get("notes") or "",
+                "_url": url,
+            }
+        )
+
+    edited = st.data_editor(
+        table_rows,
+        use_container_width=True,
+        hide_index=True,
+        key="freshness_table_editor",
+        disabled=["Status", "Topic", "URL", "HTTP", "Checked at", "Notes", "_url"],
+        column_config={
+            "Chọn": st.column_config.CheckboxColumn("Chọn"),
+            "Status": st.column_config.TextColumn("Status"),
+            "Topic": st.column_config.TextColumn("Topic"),
+            "URL": st.column_config.TextColumn("URL", width="large"),
+            "HTTP": st.column_config.TextColumn("HTTP"),
+            "Checked at": st.column_config.TextColumn("Checked at", width="medium"),
+            "Notes": st.column_config.TextColumn("Notes", width="large"),
+            "_url": None,
+        },
+    )
+
+    updated_selection = {
+        row.get("_url", "")
+        for row in edited
+        if row.get("Chọn") and row.get("_url")
+    }
+    if updated_selection != set(st.session_state[sel_key]):
+        st.session_state[sel_key] = updated_selection
+
+    with st.expander("Chi tiết records", expanded=False):
+        for row in records:
+            st.markdown(status_row_html(row), unsafe_allow_html=True)
+
+
 # ─── Page: Sessions ─────────────────────────────────────────────────────────
 def page_sessions():
     render_page_header(
@@ -1256,6 +1455,7 @@ PAGE_RENDERERS = {
     "Dashboard": page_dashboard,
     "Sources": page_sources,
     "Health Check": page_health,
+    "Freshness Center": page_freshness_center,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,
 }
