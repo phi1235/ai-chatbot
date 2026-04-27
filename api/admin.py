@@ -15,13 +15,17 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
+from observability import get_logger
+
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = get_logger(__name__)
 
 SOURCES_DIR = Path("sources")
 
@@ -38,6 +42,10 @@ class IngestRequest(BaseModel):
     topic: str | None = None
     urls: list[SourceItem] | None = None
     reset: bool = False
+
+
+class BatchRecrawlRequest(BaseModel):
+    urls: list[str]
 
 
 # ─── Sources CRUD ───────────────────────────────────────────────────────────
@@ -166,6 +174,39 @@ async def run_health_check(body: dict = Body(default={})):
 
     import check_sources  # noqa
     summary = check_sources.check_sources(topic=body.get("topic"))
+    from orchestrator import freshness_store
+
+    checked_at = time.time()
+    records = []
+    for r in summary.results:
+        mapped_status = "ERROR" if r.status == "UNKNOWN" else r.status
+        error_message = r.detail if mapped_status == "ERROR" else ""
+        records.append(
+            {
+                "url": r.location,
+                "topic": r.topic,
+                "status": mapped_status,
+                "checked_at": checked_at,
+                "http_status": r.http_status,
+                "notes": r.detail,
+                "error_message": error_message,
+                "final_url": r.final_url,
+            }
+        )
+    saved_count = freshness_store.save_many(records)
+    logger.info(
+        "Freshness snapshot updated",
+        extra={
+            "topic": body.get("topic") or "",
+            "checked_urls": summary.total,
+            "ok": summary.ok,
+            "stale": summary.stale,
+            "dead": summary.dead,
+            "redirect": summary.redirect,
+            "error": summary.unknown,
+            "saved_records": saved_count,
+        },
+    )
     return {
         "total": summary.total,
         "ok": summary.ok,
@@ -186,6 +227,89 @@ async def run_health_check(body: dict = Body(default={})):
             }
             for r in summary.results
         ],
+        "snapshot_saved": saved_count,
+    }
+
+
+@router.get("/freshness")
+async def list_freshness(
+    status: str | None = None,
+    topic: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    from orchestrator import freshness_store
+
+    allowed_status = {"OK", "STALE", "DEAD", "REDIRECT", "ERROR", "UNKNOWN"}
+    if status and status.upper() not in allowed_status:
+        raise HTTPException(status_code=400, detail="status không hợp lệ.")
+    rows = freshness_store.list_latest(
+        status=status.upper() if status else None,
+        topic=topic,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "count": len(rows),
+        "status": status.upper() if status else None,
+        "topic": topic,
+        "records": rows,
+    }
+
+
+@router.post("/freshness/recrawl")
+async def batch_recrawl(req: BatchRecrawlRequest):
+    urls = [u.strip() for u in req.urls if u.strip()]
+    if not urls:
+        raise HTTPException(status_code=400, detail="Cần ít nhất 1 URL.")
+
+    seen: set[str] = set()
+    deduped_urls: list[str] = []
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped_urls.append(url)
+
+    sources = await list_sources()
+    indexed: dict[str, dict[str, Any]] = {}
+    for topic_entry in sources["topics"]:
+        for item in topic_entry.get("items", []):
+            location = (item or {}).get("location", "")
+            if location and location not in indexed:
+                indexed[location] = item
+
+    selected = [indexed[url] for url in deduped_urls if url in indexed]
+    missing = [url for url in deduped_urls if url not in indexed]
+    if not selected:
+        raise HTTPException(status_code=404, detail="Không tìm thấy URL nào trong sources.")
+
+    from crawler.fetch_data import crawl_sources
+    from processor.chunker import process_documents
+    from processor.embedder import embed_and_store
+
+    documents = crawl_sources(selected)
+    chunks = process_documents(documents)
+    embed_and_store(chunks)
+
+    logger.info(
+        "Freshness batch recrawl completed",
+        extra={
+            "requested_count": len(deduped_urls),
+            "selected_count": len(selected),
+            "missing_count": len(missing),
+            "documents_crawled": len(documents),
+            "chunks_indexed": len(chunks),
+        },
+    )
+
+    return {
+        "requested_count": len(deduped_urls),
+        "selected_count": len(selected),
+        "missing_count": len(missing),
+        "missing_urls": missing,
+        "documents_crawled": len(documents),
+        "chunks_indexed": len(chunks),
     }
 
 
