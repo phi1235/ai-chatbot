@@ -7,7 +7,6 @@ import pytest
 
 from orchestrator.coverage_gap_detector import detect, maybe_persist_gap
 
-
 # ─── detect() pure heuristic ────────────────────────────────────────────────
 
 def test_no_retrieval():

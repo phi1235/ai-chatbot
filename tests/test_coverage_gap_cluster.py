@@ -1,10 +1,7 @@
 """Unit tests cho orchestrator.coverage_gap_cluster – normalize + cluster key."""
 from __future__ import annotations
 
-import pytest
-
 from orchestrator.coverage_gap_cluster import make_cluster_key, normalize_text
-
 
 # ─── normalize_text ──────────────────────────────────────────────────────────
 
