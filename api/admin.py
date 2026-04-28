@@ -802,8 +802,13 @@ async def list_coverage_gap_clusters(
 
     Sorted by occurrence count desc, then latest_created_at desc.
     Supports optional topic and status filters.
+    Each cluster is enriched with a heuristic recommendation.
     """
     from orchestrator import coverage_gap_store
+    from orchestrator.coverage_gap_recommendation import (
+        get_topic_source_context,
+        recommend_for_cluster,
+    )
 
     valid_statuses = {"new", "reviewed", "actioned", "ignored"}
     if status and status not in valid_statuses:
@@ -815,6 +820,11 @@ async def list_coverage_gap_clusters(
         limit=limit,
         offset=offset,
     )
+
+    topic_sources = get_topic_source_context(SOURCES_DIR)
+    for cl in clusters:
+        cl["recommendation"] = recommend_for_cluster(cl, topic_sources)
+
     return {
         "count": len(clusters),
         "clusters": clusters,
@@ -827,16 +837,51 @@ async def get_coverage_gap_cluster_detail(
     limit: int = 50,
     offset: int = 0,
 ):
-    """Drill-down: return all gaps belonging to a specific cluster."""
+    """Drill-down: return all gaps belonging to a specific cluster.
+
+    Also includes a heuristic recommendation built from the cluster's
+    aggregate data.
+    """
     from orchestrator import coverage_gap_store
+    from orchestrator.coverage_gap_recommendation import (
+        get_topic_source_context,
+        recommend_for_cluster,
+    )
 
     gaps = coverage_gap_store.list_gaps_by_cluster(
         cluster_key,
         limit=limit,
         offset=offset,
     )
+
+    # Build a lightweight cluster summary for the recommendation engine
+    recommendation = None
+    if gaps:
+        detected_topic = gaps[0].get("detected_topic") or ""
+        statuses: dict[str, int] = {}
+        for g in gaps:
+            s = g.get("status", "new")
+            statuses[s] = statuses.get(s, 0) + 1
+        resolutions: dict[str, int] = {}
+        for g in gaps:
+            res = g.get("resolution")
+            if res:
+                resolutions[res] = resolutions.get(res, 0) + 1
+
+        cluster_summary = {
+            "cluster_key": cluster_key,
+            "representative_question": gaps[0].get("question", ""),
+            "detected_topic": detected_topic,
+            "count": len(gaps),
+            "statuses": statuses,
+            "resolutions": resolutions,
+        }
+        topic_sources = get_topic_source_context(SOURCES_DIR)
+        recommendation = recommend_for_cluster(cluster_summary, topic_sources)
+
     return {
         "cluster_key": cluster_key,
         "count": len(gaps),
         "gaps": gaps,
+        "recommendation": recommendation,
     }

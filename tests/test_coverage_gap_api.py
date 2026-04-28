@@ -468,6 +468,9 @@ def test_list_clusters_groups_similar_gaps(client):
     assert len(cluster["sample_gap_ids"]) == 3
     assert "statuses" in cluster
     assert "resolutions" in cluster
+    assert "recommendation" in cluster
+    assert cluster["recommendation"]["recommended_action"] in {"add_source", "recrawl", "review_only"}
+    assert "recommendation_reason" in cluster["recommendation"]
 
 
 def test_list_clusters_filter_by_topic(client):
@@ -521,6 +524,8 @@ def test_cluster_detail_drill_down(client):
     gap_ids = {g["id"] for g in data["gaps"]}
     assert gid1 in gap_ids
     assert gid2 in gap_ids
+    assert data["recommendation"] is not None
+    assert data["recommendation"]["recommended_action"] in {"add_source", "recrawl", "review_only"}
 
 
 def test_cluster_detail_empty(client):
@@ -529,6 +534,7 @@ def test_cluster_detail_empty(client):
     data = r.json()
     assert data["count"] == 0
     assert data["gaps"] == []
+    assert data["recommendation"] is None
 
 
 # ─── Regression: raw gap workflow still works with cluster_key ────────────────

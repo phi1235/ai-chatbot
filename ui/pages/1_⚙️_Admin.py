@@ -1787,6 +1787,65 @@ def _render_cluster_view(raw_items: list[dict]):
 
             st.markdown(f"**Representative question:** {rep_q}")
 
+            # ── Recommendation section ──
+            rec = cl.get("recommendation")
+            if rec:
+                r_action = rec.get("recommended_action", "review_only")
+                r_reason = rec.get("recommendation_reason", "")
+                r_topic = rec.get("candidate_topic", "")
+                r_query = rec.get("suggested_search_query", "")
+                r_priority = rec.get("priority", "low")
+                r_signals = rec.get("signals", [])
+
+                action_colors = {
+                    "add_source": ("var(--warn)", "#fef3c7"),
+                    "recrawl": ("var(--accent)", "var(--accent-soft)"),
+                    "review_only": ("var(--text-muted)", "#f3f4f6"),
+                }
+                a_color, a_bg = action_colors.get(r_action, ("var(--text-muted)", "#f3f4f6"))
+
+                priority_labels = {
+                    "high": ("HIGH", "var(--danger)", "#fee2e2"),
+                    "medium": ("MED", "var(--warn)", "#fef3c7"),
+                    "low": ("LOW", "var(--text-subtle)", "#f3f4f6"),
+                }
+                p_label, p_color, p_bg = priority_labels.get(
+                    r_priority, ("LOW", "var(--text-subtle)", "#f3f4f6")
+                )
+
+                rec_html = (
+                    f'<div style="border:1px solid var(--border); border-radius:8px; '
+                    f'padding:0.8rem 1rem; margin:0.5rem 0 0.8rem; background:var(--surface);">'
+                    f'<div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;">'
+                    f'<span style="font-weight:600; font-size:0.82rem; color:{a_color}; '
+                    f'background:{a_bg}; padding:0.15rem 0.5rem; border-radius:4px;">'
+                    f'{r_action.upper().replace("_", " ")}</span>'
+                    f'<span style="font-weight:600; font-size:0.68rem; color:{p_color}; '
+                    f'background:{p_bg}; padding:0.1rem 0.4rem; border-radius:3px;">'
+                    f'{p_label}</span>'
+                    f'<span style="color:var(--text-subtle); font-size:0.72rem;">Recommendation</span>'
+                    f'</div>'
+                    f'<div style="font-size:0.82rem; color:var(--text); margin-bottom:0.3rem;">{r_reason}</div>'
+                )
+                if r_topic:
+                    rec_html += (
+                        f'<div style="font-size:0.78rem; color:var(--text-muted);">'
+                        f'<b>Topic:</b> {r_topic}</div>'
+                    )
+                if r_query:
+                    rec_html += (
+                        f'<div style="font-size:0.78rem; color:var(--text-muted);">'
+                        f'<b>Search query:</b> <code>{r_query}</code></div>'
+                    )
+                if r_signals:
+                    sig_str = ", ".join(r_signals)
+                    rec_html += (
+                        f'<div style="font-size:0.72rem; color:var(--text-subtle); margin-top:0.2rem;">'
+                        f'Signals: {sig_str}</div>'
+                    )
+                rec_html += '</div>'
+                st.markdown(rec_html, unsafe_allow_html=True)
+
             # Drill-down: show gaps in this cluster
             if st.button("Xem gaps trong cluster", key=f"cl-drill-{ck}"):
                 st.session_state[f"cl_expand_{ck}"] = True
@@ -2031,35 +2090,34 @@ def page_coverage_gaps():
                 st.markdown("---")
                 review_tab, action_tab = st.tabs(["Review", "Action"])
 
-                with review_tab:
-                    with st.form(key=f"cg-review-form-{gap_id}"):
-                        note_input = st.text_input(
-                            "Review note",
-                            placeholder="Ghi chú ngắn (optional)",
-                            key=f"cg-note-{gap_id}",
+                with review_tab, st.form(key=f"cg-review-form-{gap_id}"):
+                    note_input = st.text_input(
+                        "Review note",
+                        placeholder="Ghi chú ngắn (optional)",
+                        key=f"cg-note-{gap_id}",
+                    )
+                    rcols = st.columns(2)
+                    with rcols[0]:
+                        status_input = st.selectbox(
+                            "Status",
+                            options=["reviewed", "actioned", "ignored"],
+                            key=f"cg-status-{gap_id}",
                         )
-                        rcols = st.columns(2)
-                        with rcols[0]:
-                            status_input = st.selectbox(
-                                "Status",
-                                options=["reviewed", "actioned", "ignored"],
-                                key=f"cg-status-{gap_id}",
-                            )
-                        with rcols[1]:
-                            resolution_input = st.selectbox(
-                                "Resolution",
-                                options=[
-                                    "(none)", "add_source", "recrawl", "out_of_scope",
-                                    "duplicate", "retrieval_tuning", "prompt_tuning",
-                                ],
-                                key=f"cg-resolution-{gap_id}",
-                            )
-                        if st.form_submit_button("Đánh dấu", type="primary"):
-                            res_value = resolution_input if resolution_input != "(none)" else None
-                            result = review_coverage_gap(gap_id, status_input, res_value, note_input)
-                            if result:
-                                st.success("Đã cập nhật!")
-                                st.rerun()
+                    with rcols[1]:
+                        resolution_input = st.selectbox(
+                            "Resolution",
+                            options=[
+                                "(none)", "add_source", "recrawl", "out_of_scope",
+                                "duplicate", "retrieval_tuning", "prompt_tuning",
+                            ],
+                            key=f"cg-resolution-{gap_id}",
+                        )
+                    if st.form_submit_button("Đánh dấu", type="primary"):
+                        res_value = resolution_input if resolution_input != "(none)" else None
+                        result = review_coverage_gap(gap_id, status_input, res_value, note_input)
+                        if result:
+                            st.success("Đã cập nhật!")
+                            st.rerun()
 
                 with action_tab:
                     action_type = st.selectbox(
