@@ -908,3 +908,109 @@ async def get_coverage_gap_cluster_detail(
         "gaps": gaps,
         "recommendation": recommendation,
     }
+
+
+# ─── Feedback Action Queue ───────────────────────────────────────────────────
+
+class ActionItemStatusRequest(BaseModel):
+    status: str  # pending | accepted | done | ignored
+    owner_note: str | None = None
+
+
+@router.post("/feedback/{feedback_id}/action-item")
+async def create_feedback_action_item(feedback_id: int):
+    """Create an action item from a reviewed feedback record.
+
+    Derives suggested_action and reason from the feedback's root_cause,
+    detected_topic, and rewritten_query. At most one active action item
+    (pending or accepted) is allowed per feedback record.
+    """
+    from orchestrator import feedback_action_store, feedback_store
+
+    feedback = feedback_store.get_feedback(feedback_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback không tồn tại.")
+    if not feedback.get("reviewed") or feedback.get("review_status") == "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Feedback phải được review trước khi tạo action item.",
+        )
+
+    try:
+        item = feedback_action_store.create_action_item(
+            feedback_id=feedback_id,
+            root_cause=feedback.get("root_cause"),
+            detected_topic=feedback.get("detected_topic"),
+            query_hint=feedback.get("rewritten_query"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return item
+
+
+@router.get("/feedback-actions")
+async def list_feedback_actions(
+    status: str | None = None,
+    suggested_action: str | None = None,
+    root_cause: str | None = None,
+    detected_topic: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List feedback action items with optional filters."""
+    from orchestrator import feedback_action_store
+
+    if status and status not in feedback_action_store.valid_statuses():
+        raise HTTPException(
+            status_code=400,
+            detail=f"status phải là một trong: {', '.join(sorted(feedback_action_store.valid_statuses()))}",
+        )
+    if suggested_action and suggested_action not in feedback_action_store.valid_suggested_actions():
+        raise HTTPException(
+            status_code=400,
+            detail=f"suggested_action phải là một trong: {', '.join(sorted(feedback_action_store.valid_suggested_actions()))}",
+        )
+
+    items = feedback_action_store.list_action_items(
+        status=status,
+        suggested_action=suggested_action,
+        root_cause=root_cause,
+        detected_topic=detected_topic,
+        limit=limit,
+        offset=offset,
+    )
+    summary = feedback_action_store.count_summary()
+    return {
+        "count": len(items),
+        "summary": summary,
+        "items": items,
+    }
+
+
+@router.post("/feedback-actions/{action_id}/status")
+async def update_feedback_action_status(action_id: int, req: ActionItemStatusRequest):
+    """Update the status of a feedback action item. Optionally set/update owner_note."""
+    from orchestrator import feedback_action_store
+
+    existing = feedback_action_store.get_action_item(action_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Action item không tồn tại.")
+
+    try:
+        updated = feedback_action_store.update_action_status(
+            action_id,
+            status=req.status,
+            owner_note=req.owner_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return updated
+
+
+@router.get("/feedback-actions/summary")
+async def feedback_actions_summary():
+    """Quick summary counts for the feedback action queue dashboard."""
+    from orchestrator import feedback_action_store
+    return feedback_action_store.count_summary()

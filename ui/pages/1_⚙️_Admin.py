@@ -258,6 +258,60 @@ def review_feedback_item(
         return None
 
 
+def create_feedback_action_item(feedback_id: int) -> dict | None:
+    try:
+        r = http().post(f"{api_url()}/admin/feedback/{feedback_id}/action-item")
+        if r.status_code == 409:
+            st.warning(r.json().get("detail", "Active action item already exists for this feedback."))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Create action item failed: {exc}")
+        return None
+
+
+def get_feedback_actions(
+    status: str | None = None,
+    suggested_action: str | None = None,
+    root_cause: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if suggested_action:
+            params["suggested_action"] = suggested_action
+        if root_cause:
+            params["root_cause"] = root_cause
+        r = http().get(f"{api_url()}/admin/feedback-actions", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch action items: {exc}")
+        return None
+
+
+def update_feedback_action_status(
+    action_id: int, status: str, owner_note: str | None = None
+) -> dict | None:
+    try:
+        body: dict = {"status": status}
+        if owner_note:
+            body["owner_note"] = owner_note
+        r = http().post(
+            f"{api_url()}/admin/feedback-actions/{action_id}/status",
+            json=body,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Update status failed: {exc}")
+        return None
+
+
 def get_coverage_gaps(
     status: str | None = None,
     detected_topic: str | None = None,
@@ -731,6 +785,7 @@ with st.sidebar:
             "Freshness Center",
             "Coverage Gaps",
             "Feedback",
+            "Action Queue",
             "Sessions",
             "Maintenance",
         ],
@@ -2439,6 +2494,18 @@ def page_feedback():
                 if item.get("review_note"):
                     review_line += f" — {item['review_note']}"
                 st.success(review_line)
+
+                # Allow creating action item from reviewed feedback
+                if st.button(
+                    "Create action item",
+                    key=f"create-action-{fb_id}",
+                    help="Create a follow-up action item for this feedback in the Action Queue.",
+                ):
+                    result = create_feedback_action_item(fb_id)
+                    if result:
+                        act_label = _ACTION_LABELS.get(result.get("suggested_action", ""), result.get("suggested_action", ""))
+                        st.success(f"Action item #{result['id']} created: {act_label}")
+                        st.rerun()
             else:
                 with st.form(key=f"review-form-{fb_id}"):
                     rcols = st.columns([2, 1, 1])
@@ -2469,6 +2536,188 @@ def page_feedback():
                             st.rerun()
 
 
+# ─── Page: Action Queue ──────────────────────────────────────────────────────
+_ACTION_LABELS = {
+    "create_coverage_gap": "Create coverage gap",
+    "recrawl_source": "Recrawl source",
+    "improve_retrieval": "Improve retrieval",
+    "adjust_prompt": "Adjust prompt",
+    "ignore": "Ignore",
+}
+
+_ACTION_COLORS = {
+    "create_coverage_gap": ("var(--warn)", "#fef3c7"),
+    "recrawl_source": ("var(--accent)", "var(--accent-soft)"),
+    "improve_retrieval": ("var(--ok)", "#ecfdf5"),
+    "adjust_prompt": ("var(--text-muted)", "#f3f4f6"),
+    "ignore": ("var(--text-subtle)", "#f9fafb"),
+}
+
+_STATUS_COLORS = {
+    "pending": ("var(--warn)", "#fef3c7"),
+    "accepted": ("var(--ok)", "#ecfdf5"),
+    "done": ("var(--text-muted)", "#f3f4f6"),
+    "ignored": ("var(--text-subtle)", "#f9fafb"),
+}
+
+
+def page_feedback_actions():
+    render_page_header(
+        "Action Queue",
+        "Follow-up action items derived from reviewed feedback",
+    )
+
+    data = get_feedback_actions(limit=200)
+    if data is None:
+        return
+
+    summary = data.get("summary", {})
+    items = data.get("items", [])
+
+    # ─── Summary metrics ────────────────────────────────────────────────
+    cols = st.columns(5)
+    cols[0].metric("Total", summary.get("total", 0))
+    cols[1].metric("Pending", summary.get("total_pending", 0))
+    cols[2].metric("Accepted", summary.get("total_accepted", 0))
+    cols[3].metric("Done", summary.get("total_done", 0))
+    cols[4].metric("Ignored", summary.get("total_ignored", 0))
+
+    by_action = summary.get("by_action", {})
+    if by_action:
+        st.markdown("&nbsp;")
+        st.markdown('<div class="card-title">By suggested action</div>', unsafe_allow_html=True)
+        for act, cnt in by_action.items():
+            label = _ACTION_LABELS.get(act, act)
+            st.text(f"  {label}: {cnt}")
+
+    st.markdown("&nbsp;")
+
+    # ─── Filters ────────────────────────────────────────────────────────
+    fcols = st.columns([1, 1, 1, 1])
+    with fcols[0]:
+        filter_status = st.selectbox(
+            "Status",
+            options=["All", "pending", "accepted", "done", "ignored"],
+            key="aq_filter_status",
+            label_visibility="collapsed",
+        )
+    with fcols[1]:
+        filter_action = st.selectbox(
+            "Suggested action",
+            options=["All"] + list(_ACTION_LABELS.keys()),
+            format_func=lambda x: _ACTION_LABELS.get(x, x) if x != "All" else "All actions",
+            key="aq_filter_action",
+            label_visibility="collapsed",
+        )
+    with fcols[2]:
+        filter_limit = st.selectbox(
+            "Count",
+            options=[20, 50, 100],
+            index=1,
+            key="aq_filter_limit",
+            label_visibility="collapsed",
+        )
+    with fcols[3]:
+        if st.button("Refresh", use_container_width=True, key="aq_refresh"):
+            st.rerun()
+
+    # Re-fetch with filters
+    fs = filter_status if filter_status != "All" else None
+    fa = filter_action if filter_action != "All" else None
+    if fs or fa or filter_limit != 50:
+        data = get_feedback_actions(status=fs, suggested_action=fa, limit=filter_limit)
+        if data is None:
+            return
+        items = data.get("items", [])
+
+    if not items:
+        st.info("No action items yet. Create one from the Feedback page by reviewing a feedback record.")
+        return
+
+    st.caption(f"Showing {len(items)} action items")
+
+    # ─── Render action item list ─────────────────────────────────────────
+    for item in items:
+        action_id = item["id"]
+        fb_id = item["feedback_id"]
+        act = item["suggested_action"]
+        status = item["status"]
+        created = datetime.fromtimestamp(item["created_at"]).strftime("%d/%m %H:%M")
+        updated = datetime.fromtimestamp(item["updated_at"]).strftime("%d/%m %H:%M")
+
+        act_label = _ACTION_LABELS.get(act, act)
+        act_color, act_bg = _ACTION_COLORS.get(act, ("var(--text-muted)", "#f3f4f6"))
+        st_color, st_bg = _STATUS_COLORS.get(status, ("var(--text-muted)", "#f3f4f6"))
+
+        topic = item.get("detected_topic") or "-"
+        root_cause = item.get("root_cause") or "-"
+
+        header_html = (
+            '<div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.3rem;">'
+            f'<span style="font-size:0.75rem; font-weight:600; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{act_bg}; color:{act_color}">{act_label.upper()}</span>'
+            f'<span style="font-size:0.75rem; font-weight:600; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{st_bg}; color:{st_color}">{status.upper()}</span>'
+            f'<span style="font-size:0.74rem; color:var(--text-subtle)">[{topic}]</span>'
+            f'<span style="font-size:0.74rem; color:var(--text-subtle)">{created}</span>'
+            f'<span style="font-size:0.74rem; color:var(--text-subtle)">fb#{fb_id} · ai#{action_id}</span>'
+            '</div>'
+        )
+
+        expander_label = f"[{act_label}] [{status}] fb#{fb_id} — {root_cause}"
+        with st.expander(expander_label):
+            st.markdown(header_html, unsafe_allow_html=True)
+
+            info_parts = [
+                ("Feedback ID", f"#{fb_id}"),
+                ("Root cause", root_cause),
+                ("Topic", topic),
+                ("Suggested action", act_label),
+                ("Updated", updated),
+            ]
+            if item.get("query_hint"):
+                info_parts.append(("Query hint", item["query_hint"]))
+
+            for label, val in info_parts:
+                st.markdown(f"**{label}:** {val}")
+
+            if item.get("reason"):
+                st.markdown("**Reason:**")
+                st.text(item["reason"])
+
+            if item.get("owner_note"):
+                st.info(f"Note: {item['owner_note']}")
+
+            # ── Status update form ──────────────────────────────────────
+            if status not in ("done", "ignored"):
+                st.markdown("---")
+                with st.form(key=f"aq-status-form-{action_id}"):
+                    scols = st.columns([2, 1])
+                    with scols[0]:
+                        note_input = st.text_input(
+                            "Owner note (optional)",
+                            placeholder="Short note...",
+                            key=f"aq-note-{action_id}",
+                        )
+                    with scols[1]:
+                        new_status = st.selectbox(
+                            "New status",
+                            options=["accepted", "done", "ignored", "pending"],
+                            key=f"aq-status-{action_id}",
+                        )
+                    if st.form_submit_button("Update status", type="primary"):
+                        result = update_feedback_action_status(
+                            action_id,
+                            status=new_status,
+                            owner_note=note_input.strip() or None,
+                        )
+                        if result:
+                            st.success(f"Status updated to {new_status}.")
+                            st.rerun()
+            else:
+                st.caption(f"Status: {status} — no further actions available.")
+
+
 # ─── Render selected page ───────────────────────────────────────────────────
 PAGE_RENDERERS = {
     "Dashboard": page_dashboard,
@@ -2477,6 +2726,7 @@ PAGE_RENDERERS = {
     "Freshness Center": page_freshness_center,
     "Coverage Gaps": page_coverage_gaps,
     "Feedback": page_feedback,
+    "Action Queue": page_feedback_actions,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,
 }
