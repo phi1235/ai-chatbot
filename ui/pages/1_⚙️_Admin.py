@@ -327,6 +327,39 @@ def get_coverage_gaps_summary() -> dict | None:
         return None
 
 
+def get_coverage_gap_clusters(
+    detected_topic: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if detected_topic:
+            params["detected_topic"] = detected_topic
+        if status:
+            params["status"] = status
+        r = http().get(f"{api_url()}/admin/coverage-gap-clusters", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được clusters: {exc}")
+        return None
+
+
+def get_coverage_gap_cluster_detail(cluster_key: str, limit: int = 50) -> dict | None:
+    try:
+        r = http().get(
+            f"{api_url()}/admin/coverage-gap-clusters/{cluster_key}",
+            params={"limit": limit},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được cluster detail: {exc}")
+        return None
+
+
 def check_backend() -> bool:
     try:
         r = http().get(f"{api_url()}/health", timeout=2.0)
@@ -1673,6 +1706,119 @@ def page_maintenance():
     )
 
 
+# ─── Cluster sub-view for Coverage Gaps ──────────────────────────────────────
+def _render_cluster_view(raw_items: list[dict]):
+    """Render the cluster-first view inside Coverage Gaps page."""
+
+    # Filters for clusters
+    all_topics = sorted({it.get("detected_topic") or "" for it in raw_items} - {""})
+    fcols = st.columns([1, 1, 1, 1])
+    with fcols[0]:
+        cl_topic = st.selectbox(
+            "Topic",
+            options=["Tất cả"] + all_topics,
+            key="cl_filter_topic",
+            label_visibility="collapsed",
+        )
+    with fcols[1]:
+        cl_status = st.selectbox(
+            "Status",
+            options=["Tất cả", "new", "reviewed", "actioned", "ignored"],
+            key="cl_filter_status",
+            label_visibility="collapsed",
+        )
+    with fcols[2]:
+        cl_limit = st.selectbox(
+            "Số lượng",
+            options=[20, 50, 100],
+            index=1,
+            key="cl_filter_limit",
+            label_visibility="collapsed",
+        )
+    with fcols[3]:
+        if st.button("Làm mới", use_container_width=True, key="cl_refresh"):
+            st.rerun()
+
+    topic_val = cl_topic if cl_topic != "Tất cả" else None
+    status_val = cl_status if cl_status != "Tất cả" else None
+
+    cluster_data = get_coverage_gap_clusters(
+        detected_topic=topic_val,
+        status=status_val,
+        limit=cl_limit,
+    )
+    if not cluster_data or not cluster_data.get("clusters"):
+        st.info("Không có cluster nào phù hợp bộ lọc.")
+        return
+
+    clusters = cluster_data["clusters"]
+    st.caption(f"Hiển thị {len(clusters)} clusters")
+
+    for cl in clusters:
+        ck = cl["cluster_key"]
+        count = cl["count"]
+        topic_text = cl.get("detected_topic") or "-"
+        rep_q = cl.get("representative_question") or ck
+        latest_ts = cl.get("latest_created_at")
+        latest_str = datetime.fromtimestamp(latest_ts).strftime("%d/%m %H:%M") if latest_ts else "-"
+
+        statuses = cl.get("statuses", {})
+        status_parts = [f"{s}: {c}" for s, c in statuses.items()]
+        status_text = ", ".join(status_parts) if status_parts else "-"
+
+        resolutions = cl.get("resolutions", {})
+        res_parts = [f"{r}: {c}" for r, c in resolutions.items()]
+        res_text = ", ".join(res_parts) if res_parts else "-"
+
+        label = f"[x{count}] {rep_q[:80]}"
+        with st.expander(label):
+            info_html = (
+                f'<div style="display:flex; flex-wrap:wrap; gap:0.8rem; margin-bottom:0.5rem; font-size:0.82rem;">'
+                f'<span><b>Topic:</b> {topic_text}</span>'
+                f'<span><b>Occurrences:</b> {count}</span>'
+                f'<span><b>Latest:</b> {latest_str}</span>'
+                f'</div>'
+                f'<div style="font-size:0.82rem; margin-bottom:0.3rem;">'
+                f'<b>Statuses:</b> {status_text}</div>'
+                f'<div style="font-size:0.82rem; margin-bottom:0.5rem;">'
+                f'<b>Resolutions:</b> {res_text}</div>'
+            )
+            st.markdown(info_html, unsafe_allow_html=True)
+
+            st.markdown(f"**Representative question:** {rep_q}")
+
+            # Drill-down: show gaps in this cluster
+            if st.button("Xem gaps trong cluster", key=f"cl-drill-{ck}"):
+                st.session_state[f"cl_expand_{ck}"] = True
+
+            if st.session_state.get(f"cl_expand_{ck}"):
+                detail = get_coverage_gap_cluster_detail(ck, limit=20)
+                if detail and detail.get("gaps"):
+                    for gap in detail["gaps"]:
+                        gap_id = gap["id"]
+                        gap_status = gap["status"]
+                        created = datetime.fromtimestamp(gap["created_at"]).strftime("%d/%m %H:%M")
+                        status_color = {
+                            "new": "var(--warn)",
+                            "reviewed": "var(--accent)",
+                            "actioned": "var(--ok)",
+                            "ignored": "var(--text-subtle)",
+                        }.get(gap_status, "var(--text-muted)")
+
+                        gap_html = (
+                            f'<div style="padding:0.4rem 0; border-bottom:1px solid var(--border); font-size:0.82rem;">'
+                            f'<span style="font-weight:600; padding:0.1rem 0.4rem; border-radius:3px; '
+                            f'background:{status_color}15; color:{status_color}; font-size:0.72rem;">'
+                            f'{gap_status.upper()}</span> '
+                            f'<span style="color:var(--text-subtle)">#{gap_id} {created}</span> '
+                            f'{gap["question"][:100]}'
+                            f'</div>'
+                        )
+                        st.markdown(gap_html, unsafe_allow_html=True)
+                else:
+                    st.caption("Không tìm thấy gaps.")
+
+
 # ─── Page: Coverage Gaps ─────────────────────────────────────────────────────
 def page_coverage_gaps():
     render_page_header(
@@ -1714,6 +1860,19 @@ def page_coverage_gaps():
                     st.text(f"  {res}: {cnt}")
 
     st.markdown("&nbsp;")
+
+    # View toggle: Clusters vs Raw Gaps
+    view_mode = st.radio(
+        "Chế độ xem",
+        options=["Clusters", "Raw Gaps"],
+        horizontal=True,
+        key="cg_view_mode",
+        label_visibility="collapsed",
+    )
+
+    if view_mode == "Clusters":
+        _render_cluster_view(items)
+        return
 
     # Filters
     fcols = st.columns([1, 1, 1, 1, 1])

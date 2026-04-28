@@ -346,3 +346,171 @@ def test_gap_signals_and_citations_roundtrip():
     record = store.get_gap(gid)
     assert record["gap_signals"] == signals
     assert record["citations_snapshot"] == citations
+
+
+# ─── cluster_key persistence ─────────────────────────────────────────────────
+
+def test_add_gap_sets_cluster_key():
+    store = _store()
+    gid = store.add_gap(question="How to deploy pods?", detected_topic="kubernetes")
+    record = store.get_gap(gid)
+    assert record["cluster_key"] == "kubernetes:how to deploy pods"
+
+
+def test_add_gap_cluster_key_uses_rewritten_query():
+    store = _store()
+    gid = store.add_gap(
+        question="deploy?",
+        rewritten_query="How to deploy Kubernetes pods?",
+        detected_topic="kubernetes",
+    )
+    record = store.get_gap(gid)
+    assert record["cluster_key"] == "kubernetes:how to deploy kubernetes pods"
+
+
+def test_add_gap_cluster_key_no_topic():
+    store = _store()
+    gid = store.add_gap(question="What is Docker?")
+    record = store.get_gap(gid)
+    assert record["cluster_key"] == "what is docker"
+
+
+def test_same_question_same_cluster_key():
+    store = _store()
+    gid1 = store.add_gap(question="How to deploy?", detected_topic="k8s")
+    gid2 = store.add_gap(question="How to Deploy?", detected_topic="k8s")
+    r1 = store.get_gap(gid1)
+    r2 = store.get_gap(gid2)
+    assert r1["cluster_key"] == r2["cluster_key"]
+
+
+# ─── list_clusters ───────────────────────────────────────────────────────────
+
+def test_list_clusters_empty():
+    store = _store()
+    clusters = store.list_clusters()
+    assert clusters == []
+
+
+def test_list_clusters_groups_duplicates():
+    store = _store()
+    store.add_gap(question="How to deploy pods?", detected_topic="kubernetes")
+    store.add_gap(question="how to deploy pods", detected_topic="kubernetes")
+    store.add_gap(question="How to Deploy Pods??", detected_topic="kubernetes")
+    clusters = store.list_clusters()
+    assert len(clusters) == 1
+    assert clusters[0]["count"] == 3
+    assert clusters[0]["detected_topic"] == "kubernetes"
+    assert len(clusters[0]["sample_gap_ids"]) == 3
+
+
+def test_list_clusters_sorted_by_count_desc():
+    store = _store()
+    # 2 gaps for cluster A
+    store.add_gap(question="deploy pods", detected_topic="k8s")
+    store.add_gap(question="deploy pods", detected_topic="k8s")
+    # 3 gaps for cluster B
+    store.add_gap(question="what is docker", detected_topic="docker")
+    store.add_gap(question="what is docker", detected_topic="docker")
+    store.add_gap(question="what is docker", detected_topic="docker")
+    clusters = store.list_clusters()
+    assert len(clusters) == 2
+    assert clusters[0]["count"] == 3  # docker cluster first (higher count)
+    assert clusters[1]["count"] == 2
+
+
+def test_list_clusters_filter_by_topic():
+    store = _store()
+    store.add_gap(question="Q1", detected_topic="kubernetes")
+    store.add_gap(question="Q2", detected_topic="docker")
+    clusters = store.list_clusters(detected_topic="kubernetes")
+    assert len(clusters) == 1
+    assert clusters[0]["detected_topic"] == "kubernetes"
+
+
+def test_list_clusters_filter_by_status():
+    store = _store()
+    gid1 = store.add_gap(question="Q1", detected_topic="k8s")
+    store.add_gap(question="Q2", detected_topic="k8s")
+    store.review_gap(gid1, status="actioned", resolution="add_source")
+    # Filter by 'new' should return only the cluster for Q2
+    clusters = store.list_clusters(status="new")
+    assert len(clusters) == 1
+    # Q2 is still new, Q1 is actioned (different cluster key though)
+    assert clusters[0]["count"] == 1
+
+
+def test_list_clusters_status_breakdown():
+    store = _store()
+    gid1 = store.add_gap(question="Deploy pods?", detected_topic="k8s")
+    store.add_gap(question="Deploy pods!", detected_topic="k8s")
+    store.review_gap(gid1, status="reviewed")
+    clusters = store.list_clusters()
+    assert len(clusters) == 1
+    statuses = clusters[0]["statuses"]
+    assert statuses.get("new") == 1
+    assert statuses.get("reviewed") == 1
+
+
+def test_list_clusters_resolution_breakdown():
+    store = _store()
+    gid1 = store.add_gap(question="Deploy pods", detected_topic="k8s")
+    store.add_gap(question="Deploy pods", detected_topic="k8s")
+    store.review_gap(gid1, status="actioned", resolution="add_source")
+    clusters = store.list_clusters()
+    assert clusters[0]["resolutions"].get("add_source") == 1
+
+
+def test_list_clusters_pagination():
+    store = _store()
+    for i in range(5):
+        store.add_gap(question=f"Unique question {i}", detected_topic="k8s")
+    clusters = store.list_clusters(limit=2)
+    assert len(clusters) == 2
+    clusters_page2 = store.list_clusters(limit=2, offset=2)
+    assert len(clusters_page2) == 2
+
+
+def test_list_clusters_representative_question():
+    store = _store()
+    store.add_gap(question="How to deploy pods?", detected_topic="k8s")
+    import time
+    time.sleep(0.01)
+    store.add_gap(question="How to Deploy Pods!", detected_topic="k8s")
+    clusters = store.list_clusters()
+    assert len(clusters) == 1
+    # Representative should be from the newest gap
+    assert clusters[0]["representative_question"] in (
+        "How to deploy pods?", "How to Deploy Pods!",
+    )
+
+
+# ─── list_gaps_by_cluster ───────────────────────────────────────────────────
+
+def test_list_gaps_by_cluster():
+    store = _store()
+    store.add_gap(question="Deploy pods?", detected_topic="k8s")
+    store.add_gap(question="Deploy pods!", detected_topic="k8s")
+    store.add_gap(question="What is docker?", detected_topic="docker")
+    # Get the cluster key
+    gap = store.get_gap(1)
+    ck = gap["cluster_key"]
+    gaps = store.list_gaps_by_cluster(ck)
+    assert len(gaps) == 2
+    assert all(g["cluster_key"] == ck for g in gaps)
+
+
+def test_list_gaps_by_cluster_empty():
+    store = _store()
+    gaps = store.list_gaps_by_cluster("nonexistent_key")
+    assert gaps == []
+
+
+def test_list_gaps_by_cluster_pagination():
+    store = _store()
+    for _ in range(5):
+        store.add_gap(question="Same question", detected_topic="t")
+    gap = store.get_gap(1)
+    ck = gap["cluster_key"]
+    gaps = store.list_gaps_by_cluster(ck, limit=2)
+    assert len(gaps) == 2

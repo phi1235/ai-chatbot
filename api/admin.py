@@ -787,3 +787,56 @@ async def coverage_gaps_summary():
     """Quick summary counts for coverage gaps dashboard."""
     from orchestrator import coverage_gap_store
     return coverage_gap_store.count_summary()
+
+
+# ─── Coverage Gap Clusters ───────────────────────────────────────────────────
+
+@router.get("/coverage-gap-clusters")
+async def list_coverage_gap_clusters(
+    detected_topic: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List coverage gap clusters (grouped by heuristic cluster key).
+
+    Sorted by occurrence count desc, then latest_created_at desc.
+    Supports optional topic and status filters.
+    """
+    from orchestrator import coverage_gap_store
+
+    valid_statuses = {"new", "reviewed", "actioned", "ignored"}
+    if status and status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="status không hợp lệ.")
+
+    clusters = coverage_gap_store.list_clusters(
+        detected_topic=detected_topic,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "count": len(clusters),
+        "clusters": clusters,
+    }
+
+
+@router.get("/coverage-gap-clusters/{cluster_key:path}")
+async def get_coverage_gap_cluster_detail(
+    cluster_key: str,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Drill-down: return all gaps belonging to a specific cluster."""
+    from orchestrator import coverage_gap_store
+
+    gaps = coverage_gap_store.list_gaps_by_cluster(
+        cluster_key,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "cluster_key": cluster_key,
+        "count": len(gaps),
+        "gaps": gaps,
+    }

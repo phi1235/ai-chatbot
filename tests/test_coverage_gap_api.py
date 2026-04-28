@@ -438,3 +438,115 @@ def test_full_action_flow(client, tmp_path):
     # Source file was written
     source_file = tmp_path / "sources" / "kubernetes.json"
     assert source_file.exists()
+
+
+# ─── GET /admin/coverage-gap-clusters ────────────────────────────────────────
+
+def test_list_clusters_empty(client):
+    r = client.get("/admin/coverage-gap-clusters")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 0
+    assert data["clusters"] == []
+
+
+def test_list_clusters_groups_similar_gaps(client):
+    """Gaps with same normalized question/topic are grouped."""
+    import orchestrator.coverage_gap_store as cgs
+    cgs.add_gap(question="How to deploy pods?", detected_topic="kubernetes")
+    cgs.add_gap(question="how to deploy pods", detected_topic="kubernetes")
+    cgs.add_gap(question="How to Deploy Pods!", detected_topic="kubernetes")
+
+    r = client.get("/admin/coverage-gap-clusters")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    cluster = data["clusters"][0]
+    assert cluster["count"] == 3
+    assert cluster["detected_topic"] == "kubernetes"
+    assert cluster["representative_question"] != ""
+    assert len(cluster["sample_gap_ids"]) == 3
+    assert "statuses" in cluster
+    assert "resolutions" in cluster
+
+
+def test_list_clusters_filter_by_topic(client):
+    import orchestrator.coverage_gap_store as cgs
+    cgs.add_gap(question="Q1", detected_topic="kubernetes")
+    cgs.add_gap(question="Q2", detected_topic="docker")
+
+    r = client.get("/admin/coverage-gap-clusters", params={"detected_topic": "kubernetes"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    assert data["clusters"][0]["detected_topic"] == "kubernetes"
+
+
+def test_list_clusters_invalid_status(client):
+    r = client.get("/admin/coverage-gap-clusters", params={"status": "invalid"})
+    assert r.status_code == 400
+
+
+def test_list_clusters_sorted_by_count(client):
+    import orchestrator.coverage_gap_store as cgs
+    # 1 gap for "kubernetes:q1"
+    cgs.add_gap(question="Q1", detected_topic="kubernetes")
+    # 3 gaps for "docker:q2"
+    cgs.add_gap(question="Q2", detected_topic="docker")
+    cgs.add_gap(question="Q2", detected_topic="docker")
+    cgs.add_gap(question="Q2", detected_topic="docker")
+
+    r = client.get("/admin/coverage-gap-clusters")
+    assert r.status_code == 200
+    clusters = r.json()["clusters"]
+    assert len(clusters) == 2
+    assert clusters[0]["count"] >= clusters[1]["count"]
+
+
+# ─── GET /admin/coverage-gap-clusters/{cluster_key} ──────────────────────────
+
+def test_cluster_detail_drill_down(client):
+    import orchestrator.coverage_gap_store as cgs
+    gid1 = cgs.add_gap(question="Deploy pods?", detected_topic="k8s")
+    gid2 = cgs.add_gap(question="Deploy pods!", detected_topic="k8s")
+    gap = cgs.get_gap(gid1)
+    ck = gap["cluster_key"]
+
+    r = client.get(f"/admin/coverage-gap-clusters/{ck}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["cluster_key"] == ck
+    assert data["count"] == 2
+    assert len(data["gaps"]) == 2
+    gap_ids = {g["id"] for g in data["gaps"]}
+    assert gid1 in gap_ids
+    assert gid2 in gap_ids
+
+
+def test_cluster_detail_empty(client):
+    r = client.get("/admin/coverage-gap-clusters/nonexistent_key")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 0
+    assert data["gaps"] == []
+
+
+# ─── Regression: raw gap workflow still works with cluster_key ────────────────
+
+def test_raw_gap_includes_cluster_key(client):
+    """Existing gap endpoints now include cluster_key in response."""
+    _seed_gap(client)
+    r = client.get("/admin/coverage-gaps")
+    assert r.status_code == 200
+    item = r.json()["items"][0]
+    assert "cluster_key" in item
+    assert item["cluster_key"]  # not empty
+
+    # Review still works
+    gap_id = item["id"]
+    r2 = client.post(
+        f"/admin/coverage-gaps/{gap_id}/review",
+        json={"status": "reviewed"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["cluster_key"] == item["cluster_key"]

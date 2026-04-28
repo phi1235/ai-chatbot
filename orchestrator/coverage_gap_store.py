@@ -25,13 +25,15 @@ Schema:
         created_at        REAL NOT NULL,
         reviewed_at       REAL,
         action_payload    TEXT,    -- JSON: chi tiết action đã thực hiện
-        actioned_at       REAL     -- timestamp khi action hoàn thành
+        actioned_at       REAL,    -- timestamp khi action hoàn thành
+        cluster_key       TEXT     -- heuristic grouping key for dedup/clustering
     )
 
 Design notes:
 - Lazy init tương tự feedback_store / freshness_store.
 - Thread-safe qua _lock + check_same_thread=False.
 - citations_snapshot và gap_signals lưu dạng JSON TEXT.
+- cluster_key computed via coverage_gap_cluster.make_cluster_key on insert.
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ from pathlib import Path
 from threading import Lock
 
 from config.settings import settings
+from orchestrator.coverage_gap_cluster import make_cluster_key
 
 _lock = Lock()
 _initialised_paths: set[str] = set()
@@ -117,6 +120,33 @@ def _ensure_schema(db_path: Path | None = None) -> None:
             conn.execute("ALTER TABLE coverage_gaps ADD COLUMN action_payload TEXT")
         if "actioned_at" not in existing_cols:
             conn.execute("ALTER TABLE coverage_gaps ADD COLUMN actioned_at REAL")
+        if "cluster_key" not in existing_cols:
+            conn.execute("ALTER TABLE coverage_gaps ADD COLUMN cluster_key TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coverage_gap_cluster_key "
+                "ON coverage_gaps(cluster_key)"
+            )
+            # Backfill cluster_key for existing rows
+            rows = conn.execute(
+                "SELECT id, question, rewritten_query, detected_topic "
+                "FROM coverage_gaps WHERE cluster_key IS NULL"
+            ).fetchall()
+            for r in rows:
+                ck = make_cluster_key(
+                    question=r["question"] or "",
+                    rewritten_query=r["rewritten_query"],
+                    detected_topic=r["detected_topic"],
+                )
+                conn.execute(
+                    "UPDATE coverage_gaps SET cluster_key = ? WHERE id = ?",
+                    (ck, r["id"]),
+                )
+        else:
+            # Ensure index exists even if column was already added
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coverage_gap_cluster_key "
+                "ON coverage_gaps(cluster_key)"
+            )
     _initialised_paths.add(key)
 
 
@@ -139,14 +169,20 @@ def add_gap(
 
     _ensure_schema()
     now = time.time()
+    cluster_key = make_cluster_key(
+        question=question.strip(),
+        rewritten_query=(rewritten_query or "").strip() or None,
+        detected_topic=(detected_topic or "").strip() or None,
+    )
     with _lock, _connect() as conn:
         cursor = conn.execute(
             """
             INSERT INTO coverage_gaps (
                 session_id, message_id, question, rewritten_query,
                 detected_topic, answer_excerpt, retrieval_count,
-                citations_snapshot, gap_signals, feedback_type, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                citations_snapshot, gap_signals, feedback_type, created_at,
+                cluster_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (session_id or "").strip() or None,
@@ -160,6 +196,7 @@ def add_gap(
                 json.dumps(gap_signals or [], ensure_ascii=False),
                 (feedback_type or "").strip() or None,
                 now,
+                cluster_key,
             ),
         )
         return cursor.lastrowid  # type: ignore[return-value]
@@ -385,4 +422,124 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "reviewed_at": row["reviewed_at"],
         "action_payload": action_payload,
         "actioned_at": row["actioned_at"],
+        "cluster_key": row["cluster_key"],
     }
+
+
+# ─── Cluster aggregation ────────────────────────────────────────────────────
+
+def list_clusters(
+    *,
+    detected_topic: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Return cluster summaries, sorted by count desc then latest_created_at desc.
+
+    Each cluster dict contains:
+        cluster_key, representative_question, detected_topic, count,
+        latest_created_at, statuses (dict), resolutions (dict),
+        sample_gap_ids (list of up to 5 ids).
+    """
+    _ensure_schema()
+
+    where = ["cluster_key IS NOT NULL AND cluster_key != ''"]
+    params: list[object] = []
+
+    if detected_topic:
+        where.append("detected_topic = ?")
+        params.append(detected_topic)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+
+    where_sql = " AND ".join(where)
+    params.extend([max(1, min(limit, 500)), max(0, offset)])
+
+    # Simple GROUP BY approach – compatible with all SQLite versions
+    query = f"""
+        SELECT
+            cluster_key,
+            detected_topic,
+            COUNT(*) AS cnt,
+            MAX(created_at) AS latest_created_at
+        FROM coverage_gaps
+        WHERE {where_sql}
+        GROUP BY cluster_key
+        ORDER BY cnt DESC, latest_created_at DESC
+        LIMIT ? OFFSET ?
+    """
+
+    with _lock, _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+        clusters = []
+        for row in rows:
+            ck = row["cluster_key"]
+
+            # Representative question: from the newest gap in this cluster
+            rep_row = conn.execute(
+                "SELECT question FROM coverage_gaps WHERE cluster_key = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (ck,),
+            ).fetchone()
+            rep_question = rep_row["question"] if rep_row else ""
+
+            # Fetch sample ids for this cluster (up to 5)
+            id_rows = conn.execute(
+                "SELECT id FROM coverage_gaps WHERE cluster_key = ? "
+                "ORDER BY created_at DESC LIMIT 5",
+                (ck,),
+            ).fetchall()
+
+            # Build status breakdown dict
+            statuses: dict[str, int] = {}
+            status_rows = conn.execute(
+                "SELECT status, COUNT(*) AS cnt FROM coverage_gaps "
+                "WHERE cluster_key = ? GROUP BY status",
+                (ck,),
+            ).fetchall()
+            for sr in status_rows:
+                statuses[sr["status"]] = sr["cnt"]
+
+            # Build resolution breakdown dict
+            resolutions: dict[str, int] = {}
+            res_rows = conn.execute(
+                "SELECT resolution, COUNT(*) AS cnt FROM coverage_gaps "
+                "WHERE cluster_key = ? AND resolution IS NOT NULL AND resolution != '' "
+                "GROUP BY resolution",
+                (ck,),
+            ).fetchall()
+            for rr in res_rows:
+                resolutions[rr["resolution"]] = rr["cnt"]
+
+            clusters.append({
+                "cluster_key": ck,
+                "representative_question": rep_question,
+                "detected_topic": row["detected_topic"] or "",
+                "count": row["cnt"],
+                "latest_created_at": row["latest_created_at"],
+                "statuses": statuses,
+                "resolutions": resolutions,
+                "sample_gap_ids": [r["id"] for r in id_rows],
+            })
+
+    return clusters
+
+
+def list_gaps_by_cluster(
+    cluster_key: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Return all gaps belonging to a given cluster_key, newest first."""
+    _ensure_schema()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM coverage_gaps WHERE cluster_key = ? "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (cluster_key, max(1, min(limit, 500)), max(0, offset)),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
