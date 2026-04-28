@@ -202,6 +202,18 @@ def test_get_feedback_by_id():
     assert record["question"] == "Q"
 
 
+def test_delete_feedback_existing():
+    fs = _store()
+    fid = fs.add_feedback(question="Q", answer="A", feedback_type="up")
+    assert fs.delete_feedback(fid) is True
+    assert fs.get_feedback(fid) is None
+
+
+def test_delete_feedback_missing():
+    fs = _store()
+    assert fs.delete_feedback(9999) is False
+
+
 # ─── mark_reviewed ───────────────────────────────────────────────────────────
 
 def test_mark_reviewed_basic():

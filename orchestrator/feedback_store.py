@@ -180,6 +180,14 @@ def get_feedback(feedback_id: int) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
+def delete_feedback(feedback_id: int) -> bool:
+    """Delete a feedback by id. Returns True when a row was deleted."""
+    _ensure_schema()
+    with _lock, _connect() as conn:
+        cursor = conn.execute("DELETE FROM feedbacks WHERE id = ?", (feedback_id,))
+        return cursor.rowcount > 0
+
+
 def mark_reviewed(
     feedback_id: int,
     *,

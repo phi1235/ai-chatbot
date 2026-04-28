@@ -302,3 +302,34 @@ async def submit_feedback(req: _FeedbackSubmit):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"id": feedback_id, "feedback_type": req.feedback_type}
+
+
+@app.get("/feedback/session/{session_id}")
+async def get_session_feedback(session_id: str):
+    """User-facing endpoint to fetch feedback state for a session's messages."""
+    from orchestrator import feedback_store
+
+    items = feedback_store.list_feedbacks(session_id=session_id, limit=500)
+    message_feedback = {}
+    for item in items:
+        message_id = item.get("message_id")
+        if not message_id or message_id in message_feedback:
+            continue
+        message_feedback[message_id] = {
+            "id": item["id"],
+            "feedback_type": item["feedback_type"],
+        }
+    return {"session_id": session_id, "items": message_feedback}
+
+
+@app.delete("/feedback/{feedback_id}")
+async def delete_feedback(feedback_id: int):
+    """User-facing endpoint to remove a previously submitted feedback."""
+    from orchestrator import feedback_store
+
+    existing = feedback_store.get_feedback(feedback_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Feedback không tồn tại.")
+
+    deleted = feedback_store.delete_feedback(feedback_id)
+    return {"deleted": deleted, "id": feedback_id}

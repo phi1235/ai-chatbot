@@ -90,6 +90,70 @@ def test_submit_feedback_empty_answer(client):
     assert r.status_code == 400
 
 
+def test_delete_feedback(client):
+    body = {
+        "question": "What is K8s?",
+        "answer": "Kubernetes is...",
+        "feedback_type": "up",
+        "session_id": "sess-1",
+    }
+    created = client.post("/feedback", json=body)
+    fb_id = created.json()["id"]
+
+    r = client.delete(f"/feedback/{fb_id}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+
+    listed = client.get("/admin/feedback")
+    assert listed.json()["count"] == 0
+
+
+def test_delete_feedback_not_found(client):
+    r = client.delete("/feedback/9999")
+    assert r.status_code == 404
+
+
+def test_get_session_feedback(client):
+    client.post(
+        "/feedback",
+        json={
+            "question": "Q1",
+            "answer": "A1",
+            "feedback_type": "up",
+            "session_id": "sess-1",
+            "message_id": "3",
+        },
+    )
+    client.post(
+        "/feedback",
+        json={
+            "question": "Q2",
+            "answer": "A2",
+            "feedback_type": "down",
+            "session_id": "sess-1",
+            "message_id": "5",
+        },
+    )
+    client.post(
+        "/feedback",
+        json={
+            "question": "Q3",
+            "answer": "A3",
+            "feedback_type": "up",
+            "session_id": "other-sess",
+            "message_id": "1",
+        },
+    )
+
+    r = client.get("/feedback/session/sess-1")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["session_id"] == "sess-1"
+    assert data["items"]["3"]["feedback_type"] == "up"
+    assert data["items"]["5"]["feedback_type"] == "down"
+    assert "1" not in data["items"]
+
+
 # ─── POST /admin/feedback (admin submit — same endpoint) ────────────────────
 
 def test_admin_submit_feedback(client):

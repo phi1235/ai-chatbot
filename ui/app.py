@@ -110,6 +110,24 @@ def delete_session_remote(api_url: str, session_id: str) -> bool:
         return False
 
 
+def load_feedback_state(api_url: str, session_id: str) -> None:
+    """Hydrate feedback state for a session from backend persistence."""
+    prefix = f"feedback-{session_id}-"
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and key.startswith(prefix):
+            st.session_state.pop(key, None)
+
+    try:
+        r = get_http_client().get(f"{api_url}/feedback/session/{session_id}", timeout=5.0)
+        if r.status_code != 200:
+            return
+        items = r.json().get("items", {})
+        for message_id, payload in items.items():
+            st.session_state[f"feedback-{session_id}-{message_id}"] = payload
+    except Exception:
+        pass
+
+
 def switch_to_session(api_url: str, session_id: str) -> None:
     """Load messages của session từ backend rồi set vào state, AI sẽ tự đọc context khi user gõ tiếp."""
     msgs = fetch_session_messages(api_url, session_id)
@@ -125,6 +143,7 @@ def switch_to_session(api_url: str, session_id: str) -> None:
         }
         for m in msgs
     ]
+    load_feedback_state(api_url, session_id)
     st.session_state.pending_prompt = None
     st.rerun()
 
@@ -134,6 +153,40 @@ def new_chat() -> None:
     st.session_state.messages = []
     st.session_state.pending_prompt = None
     st.rerun()
+
+
+def ensure_initial_session_loaded(api_url: str) -> None:
+    """On first app open, hydrate the active session instead of showing a blank new UUID."""
+    if st.session_state.get("_initial_session_loaded"):
+        return
+
+    sessions = fetch_sessions(api_url)
+    active_session = next(
+        (s for s in sessions if s.get("id") == st.session_state.session_id),
+        None,
+    )
+
+    target_session_id = st.session_state.session_id if active_session else None
+    if not target_session_id and sessions:
+        target_session_id = sessions[0].get("id")
+
+    if target_session_id:
+        msgs = fetch_session_messages(api_url, target_session_id)
+        st.session_state.session_id = target_session_id
+        st.session_state.messages = [
+            {
+                "role": m["role"],
+                "content": m["content"],
+                "citations": m.get("citations", []),
+                "show_citations": m.get("show_citations", False),
+                "trace": m.get("trace", {}),
+                "is_error": m.get("is_error", False),
+            }
+            for m in msgs
+        ]
+        load_feedback_state(api_url, target_session_id)
+
+    st.session_state._initial_session_loaded = True
 
 
 def request_answer(api_url: str, prompt: str) -> dict:
@@ -221,30 +274,72 @@ def submit_feedback(msg_index: int, feedback_type: str, question: str, answer: s
             timeout=5.0,
         )
         if r.status_code == 200:
-            st.session_state[f"feedback-{st.session_state.session_id}-{msg_index}"] = feedback_type
+            data = r.json()
+            st.session_state[f"feedback-{st.session_state.session_id}-{msg_index}"] = {
+                "id": data.get("id"),
+                "feedback_type": feedback_type,
+            }
+    except Exception:
+        pass
+
+
+def clear_feedback(msg_index: int) -> None:
+    """Delete a previously submitted feedback from backend + UI state."""
+    feedback_key = f"feedback-{st.session_state.session_id}-{msg_index}"
+    existing = st.session_state.get(feedback_key)
+    feedback_id = existing.get("id") if isinstance(existing, dict) else None
+    if not feedback_id:
+        st.session_state.pop(feedback_key, None)
+        return
+
+    try:
+        r = get_http_client().delete(
+            f"{st.session_state.api_url}/feedback/{feedback_id}",
+            timeout=5.0,
+        )
+        if r.status_code == 200:
+            st.session_state.pop(feedback_key, None)
     except Exception:
         pass
 
 
 def render_feedback_buttons(msg_index: int, question: str, answer: str) -> None:
-    """Render inline feedback buttons (Huu ich / Chua on) for an assistant message."""
+    """Render compact inline feedback buttons with icon-only thumbs."""
     feedback_key = f"feedback-{st.session_state.session_id}-{msg_index}"
     existing = st.session_state.get(feedback_key)
 
-    if existing:
-        label = "Huu ich" if existing == "up" else "Chua on"
-        st.caption(f"Da danh gia: {label}")
-        return
+    st.markdown('<div class="feedback-actions">', unsafe_allow_html=True)
 
-    cols = st.columns([1, 1, 6])
-    with cols[0]:
-        if st.button("Huu ich", key=f"fb-up-{msg_index}", help="Cam on!"):
-            submit_feedback(msg_index, "up", question, answer)
-            st.rerun()
-    with cols[1]:
-        if st.button("Chua on", key=f"fb-down-{msg_index}", help="Can cai thien"):
-            submit_feedback(msg_index, "down", question, answer)
-            st.rerun()
+    feedback_type = existing.get("feedback_type") if isinstance(existing, dict) else existing
+
+    if feedback_type == "up":
+        cols = st.columns([0.34, 0.34, 9.32], gap="small")
+        with cols[0]:
+            st.button("👍🏻", key=f"fb-up-{msg_index}", help="Hữu ích", type="tertiary", disabled=True)
+        with cols[1]:
+            if st.button("↻", key=f"fb-clear-{msg_index}", help="Xóa bình chọn", type="tertiary"):
+                clear_feedback(msg_index)
+                st.rerun()
+    elif feedback_type == "down":
+        cols = st.columns([0.34, 0.34, 9.32], gap="small")
+        with cols[0]:
+            st.button("👎🏻", key=f"fb-down-{msg_index}", help="Chưa ổn", type="tertiary", disabled=True)
+        with cols[1]:
+            if st.button("↻", key=f"fb-clear-{msg_index}", help="Xóa bình chọn", type="tertiary"):
+                clear_feedback(msg_index)
+                st.rerun()
+    else:
+        cols = st.columns([0.34, 0.34, 9.32], gap="small")
+        with cols[0]:
+            if st.button("👍", key=f"fb-up-{msg_index}", help="Hữu ích", type="tertiary"):
+                submit_feedback(msg_index, "up", question, answer)
+                st.rerun()
+        with cols[1]:
+            if st.button("👎", key=f"fb-down-{msg_index}", help="Chưa ổn", type="tertiary"):
+                submit_feedback(msg_index, "down", question, answer)
+                st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def add_user_message(content: str) -> None:
@@ -550,6 +645,45 @@ st.markdown(
         box-shadow: 0 0 0 1px var(--accent-soft);
         color: var(--text);
     }
+    /* Feedback thumb buttons */
+    .feedback-actions {
+        margin-top: 0.15rem;
+        margin-bottom: 0.05rem;
+    }
+    .feedback-actions .stButton > button {
+        min-width: auto;
+        width: auto;
+        min-height: auto;
+        height: auto;
+        padding: 0.1rem 0.2rem;
+        border: none;
+        background: transparent;
+        box-shadow: none;
+        border-radius: 0;
+        text-align: center;
+        justify-content: center;
+        align-items: center;
+        font-size: 1rem;
+        line-height: 1;
+        margin: 0;
+        color: var(--text-muted);
+    }
+    .feedback-actions .stButton > button:hover {
+        background: transparent;
+        border: none;
+        color: var(--text);
+    }
+    .feedback-actions .stButton > button:focus:not(:active) {
+        border: none;
+        box-shadow: none;
+        color: var(--text);
+    }
+    .feedback-actions .stButton > button:disabled {
+        background: transparent;
+        border: none;
+        color: var(--text);
+        opacity: 1;
+    }
     /* Sidebar buttons (session list) */
     [data-testid="stSidebar"] .stButton > button {
         text-align: left;
@@ -775,6 +909,8 @@ st.markdown(
 )
 
 api_ok, api_message = check_api_status(st.session_state.api_url)
+if api_ok:
+    ensure_initial_session_loaded(st.session_state.api_url)
 
 # ─── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
