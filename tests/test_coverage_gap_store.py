@@ -224,6 +224,84 @@ def test_review_gap_invalid_resolution_raises():
         store.review_gap(gid, resolution="invalid_res")
 
 
+# ─── action_gap ──────────────────────────────────────────────────────────────
+
+def test_action_gap_add_source():
+    store = _store()
+    gid = store.add_gap(question="Q", detected_topic="kubernetes")
+    result = store.action_gap(
+        gid,
+        resolution="add_source",
+        action_payload={"topic": "kubernetes", "url": "https://k8s.io/docs"},
+        review_note="Added K8s docs",
+    )
+    assert result["status"] == "actioned"
+    assert result["resolution"] == "add_source"
+    assert result["action_payload"]["topic"] == "kubernetes"
+    assert result["action_payload"]["url"] == "https://k8s.io/docs"
+    assert result["actioned_at"] is not None
+    assert result["reviewed_at"] is not None
+    assert result["review_note"] == "Added K8s docs"
+
+
+def test_action_gap_recrawl():
+    store = _store()
+    gid = store.add_gap(question="Q")
+    result = store.action_gap(
+        gid,
+        resolution="recrawl",
+        action_payload={"topic": "docker", "result": {"documents_crawled": 3}},
+    )
+    assert result["status"] == "actioned"
+    assert result["resolution"] == "recrawl"
+    assert result["action_payload"]["topic"] == "docker"
+    assert result["actioned_at"] is not None
+
+
+def test_action_gap_invalid_resolution_raises():
+    store = _store()
+    gid = store.add_gap(question="Q")
+    with pytest.raises(ValueError, match="resolution"):
+        store.action_gap(gid, resolution="out_of_scope")
+
+
+def test_action_gap_empty_payload():
+    store = _store()
+    gid = store.add_gap(question="Q")
+    result = store.action_gap(gid, resolution="add_source")
+    assert result["action_payload"] == {}
+    assert result["status"] == "actioned"
+
+
+def test_action_gap_sets_timestamps():
+    store = _store()
+    gid = store.add_gap(question="Q")
+    before = time.time()
+    result = store.action_gap(gid, resolution="recrawl", action_payload={"topic": "t"})
+    after = time.time()
+    assert before <= result["actioned_at"] <= after
+    assert before <= result["reviewed_at"] <= after
+
+
+def test_action_gap_not_found_returns_none():
+    store = _store()
+    result = store.action_gap(999, resolution="add_source")
+    assert result is None
+
+
+# ─── new fields in dict ─────────────────────────────────────────────────────
+
+def test_gap_dict_includes_action_fields():
+    """Verify _row_to_dict includes action_payload and actioned_at."""
+    store = _store()
+    gid = store.add_gap(question="Q")
+    record = store.get_gap(gid)
+    assert "action_payload" in record
+    assert "actioned_at" in record
+    assert record["action_payload"] == {}
+    assert record["actioned_at"] is None
+
+
 # ─── count_summary ───────────────────────────────────────────────────────────
 
 def test_count_summary_empty():

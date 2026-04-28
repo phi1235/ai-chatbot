@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -211,3 +213,228 @@ def test_full_coverage_gap_flow(client):
     # But shows as actioned
     r4 = client.get("/admin/coverage-gaps", params={"status": "actioned"})
     assert r4.json()["count"] == 1
+
+
+# ─── POST /admin/coverage-gaps/{id}/action ────────────────────────────────────
+
+def test_action_add_source(client, tmp_path):
+    """Action: add_source writes to sources file and marks gap actioned."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {
+                "topic": "kubernetes",
+                "url": "https://k8s.io/docs/deploy",
+                "title": "K8s Deploy Guide",
+            },
+            "review_note": "Added deploy docs",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["gap"]["status"] == "actioned"
+    assert data["gap"]["resolution"] == "add_source"
+    assert data["gap"]["actioned_at"] is not None
+    assert data["gap"]["action_payload"]["url"] == "https://k8s.io/docs/deploy"
+    assert data["action_result"]["topic"] == "kubernetes"
+    assert data["action_result"]["total"] == 1
+
+    # Verify source file was created
+    source_file = tmp_path / "sources" / "kubernetes.json"
+    assert source_file.exists()
+    items = json.loads(source_file.read_text())
+    assert len(items) == 1
+    assert items[0]["location"] == "https://k8s.io/docs/deploy"
+
+
+def test_action_add_source_duplicate(client, tmp_path):
+    """add_source with existing URL returns 409."""
+    # Pre-populate sources file
+    (tmp_path / "sources").mkdir(exist_ok=True)
+    items = [{"location": "https://k8s.io/docs", "topic": "tech", "title": "T", "source": "website"}]
+    (tmp_path / "sources" / "tech.json").write_text(json.dumps(items))
+
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {"topic": "tech", "url": "https://k8s.io/docs"},
+        },
+    )
+    assert r.status_code == 409
+
+
+def test_action_add_source_missing_url(client):
+    """add_source without URL returns 400."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {"topic": "tech"},
+        },
+    )
+    assert r.status_code == 400
+    assert "url" in r.json()["detail"].lower()
+
+
+def test_action_add_source_missing_topic(client):
+    """add_source without topic returns 400."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {"url": "https://example.com"},
+        },
+    )
+    assert r.status_code == 400
+    assert "topic" in r.json()["detail"].lower()
+
+
+def test_action_recrawl_by_topic(client, tmp_path):
+    """Action: recrawl by topic calls pipeline and marks gap actioned."""
+    # Seed a topic file
+    items = [{"location": "https://k8s.io/a", "topic": "kubernetes", "title": "A", "source": "website"}]
+    (tmp_path / "sources" / "kubernetes.json").write_text(json.dumps(items))
+
+    gap_id = _seed_gap(client)
+
+    fake_docs = [{"id": "x", "title": "T", "content": "c", "topic": "kubernetes", "url": "u"}]
+    fake_chunks = [{"chunk_id": "x-1", "doc_id": "x", "title": "T", "content": "c", "topic": "kubernetes"}]
+    with patch("crawler.fetch_data.crawl_sources", return_value=fake_docs), \
+         patch("processor.chunker.process_documents", return_value=fake_chunks), \
+         patch("processor.embedder.embed_and_store"):
+        r = client.post(
+            f"/admin/coverage-gaps/{gap_id}/action",
+            json={
+                "resolution": "recrawl",
+                "action_payload": {"topic": "kubernetes"},
+                "review_note": "Recrawled K8s topic",
+            },
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["gap"]["status"] == "actioned"
+    assert data["gap"]["resolution"] == "recrawl"
+    assert data["gap"]["actioned_at"] is not None
+    assert data["action_result"]["documents_crawled"] == 1
+    assert data["action_result"]["chunks_indexed"] == 1
+
+
+def test_action_recrawl_missing_target(client):
+    """recrawl without topic or urls returns 400."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "recrawl",
+            "action_payload": {},
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_action_recrawl_nonexistent_topic(client):
+    """recrawl with non-existent topic returns 404."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "recrawl",
+            "action_payload": {"topic": "nonexistent_topic"},
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_action_invalid_resolution(client):
+    """Invalid resolution returns 400."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "out_of_scope",
+            "action_payload": {},
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_action_gap_not_found(client):
+    """Action on non-existent gap returns 404."""
+    r = client.post(
+        "/admin/coverage-gaps/9999/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {"topic": "t", "url": "https://x.com"},
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_action_gap_response_includes_action_payload(client):
+    """Verify the gap response includes action_payload and actioned_at fields."""
+    gap_id = _seed_gap(client)
+    r = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {
+                "topic": "newstuff",
+                "url": "https://example.com/new",
+            },
+        },
+    )
+    assert r.status_code == 200
+    gap = r.json()["gap"]
+    assert "action_payload" in gap
+    assert "actioned_at" in gap
+    assert gap["action_payload"]["url"] == "https://example.com/new"
+    assert gap["action_payload"]["result"]["total"] == 1
+
+
+# ─── Integration: full action flow ───────────────────────────────────────────
+
+def test_full_action_flow(client, tmp_path):
+    """Gap detected → admin sees it → admin actions add_source → gap actioned."""
+    gap_id = _seed_gap(client)
+
+    # Admin sees it
+    r1 = client.get("/admin/coverage-gaps", params={"status": "new"})
+    assert r1.json()["count"] == 1
+
+    # Admin actions add_source
+    r2 = client.post(
+        f"/admin/coverage-gaps/{gap_id}/action",
+        json={
+            "resolution": "add_source",
+            "action_payload": {
+                "topic": "kubernetes",
+                "url": "https://k8s.io/docs/new-guide",
+                "title": "New K8s Guide",
+            },
+            "review_note": "Added new guide to fill gap",
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["gap"]["status"] == "actioned"
+
+    # No longer shows as new
+    r3 = client.get("/admin/coverage-gaps", params={"status": "new"})
+    assert r3.json()["count"] == 0
+
+    # Shows as actioned
+    r4 = client.get("/admin/coverage-gaps", params={"status": "actioned"})
+    assert r4.json()["count"] == 1
+    item = r4.json()["items"][0]
+    assert item["action_payload"]["url"] == "https://k8s.io/docs/new-guide"
+    assert item["actioned_at"] is not None
+
+    # Source file was written
+    source_file = tmp_path / "sources" / "kubernetes.json"
+    assert source_file.exists()

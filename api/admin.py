@@ -48,6 +48,102 @@ class BatchRecrawlRequest(BaseModel):
     urls: list[str]
 
 
+def _load_source_items(topic: str) -> list[dict[str, Any]]:
+    path = SOURCES_DIR / f"{topic}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Topic không tồn tại: {topic}")
+    try:
+        items = json.loads(path.read_text(encoding="utf-8")) or []
+    except json.JSONDecodeError:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    return items
+
+
+def _write_source_items(topic: str, items: list[dict[str, Any]]) -> None:
+    SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    path = SOURCES_DIR / f"{topic}.json"
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _add_source_item(topic: str, location: str, title: str = "") -> dict[str, Any]:
+    topic = topic.strip()
+    location = location.strip()
+    if not location:
+        raise HTTPException(status_code=400, detail="action_payload.url là bắt buộc cho add_source.")
+    if not topic:
+        raise HTTPException(status_code=400, detail="action_payload.topic là bắt buộc cho add_source.")
+
+    SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    path = SOURCES_DIR / f"{topic}.json"
+    items: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            items = json.loads(path.read_text(encoding="utf-8")) or []
+        except json.JSONDecodeError:
+            items = []
+
+    new_item = {
+        "location": location,
+        "topic": topic,
+        "title": title.strip() or location,
+        "source": "website",
+    }
+    if any(it.get("location") == location for it in items):
+        raise HTTPException(status_code=409, detail="URL đã tồn tại trong topic này.")
+
+    items.append(new_item)
+    _write_source_items(topic, items)
+    return {"added": new_item, "topic": topic, "total": len(items)}
+
+
+async def _resolve_recrawl_sources(topic: str | None, urls: list[str] | None) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    recrawl_topic = (topic or "").strip()
+    recrawl_urls = [u.strip() for u in (urls or []) if u.strip()]
+
+    if not recrawl_topic and not recrawl_urls:
+        raise HTTPException(
+            status_code=400,
+            detail="action_payload cần có 'topic' hoặc 'urls' cho recrawl.",
+        )
+
+    if recrawl_topic:
+        sources.extend(_load_source_items(recrawl_topic))
+
+    if recrawl_urls:
+        all_sources = await list_sources()
+        indexed: dict[str, dict[str, Any]] = {}
+        for topic_entry in all_sources["topics"]:
+            for item in topic_entry.get("items", []):
+                loc = (item or {}).get("location", "")
+                if loc and loc not in indexed:
+                    indexed[loc] = item
+        for u in recrawl_urls:
+            if u in indexed:
+                sources.append(indexed[u])
+
+    if not sources:
+        raise HTTPException(status_code=400, detail="Không tìm thấy source nào để recrawl.")
+    return sources
+
+
+def _execute_recrawl(sources: list[dict[str, Any]]) -> dict[str, int]:
+    from crawler.fetch_data import crawl_sources
+    from processor.chunker import process_documents
+    from processor.embedder import embed_and_store
+
+    documents = crawl_sources(sources)
+    chunks = process_documents(documents)
+    embed_and_store(chunks)
+    return {
+        "sources_count": len(sources),
+        "documents_crawled": len(documents),
+        "chunks_indexed": len(chunks),
+    }
+
+
 # ─── Sources CRUD ───────────────────────────────────────────────────────────
 @router.get("/sources")
 async def list_sources():
@@ -75,27 +171,7 @@ async def list_sources():
 @router.post("/sources/{topic}")
 async def add_source(topic: str, item: SourceItem):
     """Thêm URL vào topic file. Tạo file nếu chưa có."""
-    SOURCES_DIR.mkdir(parents=True, exist_ok=True)
-    path = SOURCES_DIR / f"{topic}.json"
-    items: list[dict[str, Any]] = []
-    if path.exists():
-        try:
-            items = json.loads(path.read_text(encoding="utf-8")) or []
-        except json.JSONDecodeError:
-            items = []
-
-    new_item = item.model_dump()
-    new_item["topic"] = topic  # đảm bảo topic khớp filename
-    if not new_item.get("title"):
-        new_item["title"] = item.location
-
-    # Dedupe theo location
-    if any(it.get("location") == item.location for it in items):
-        raise HTTPException(status_code=409, detail="URL đã tồn tại trong topic này.")
-
-    items.append(new_item)
-    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"topic": topic, "added": new_item, "total": len(items)}
+    return _add_source_item(topic=topic, location=item.location, title=item.title)
 
 
 @router.delete("/sources/{topic}")
@@ -585,6 +661,12 @@ class CoverageGapReviewRequest(BaseModel):
     review_note: str | None = None
 
 
+class CoverageGapActionRequest(BaseModel):
+    resolution: str  # add_source | recrawl
+    review_note: str | None = None
+    action_payload: dict | None = None  # action-specific data
+
+
 @router.get("/coverage-gaps")
 async def list_coverage_gaps(
     status: str | None = None,
@@ -635,6 +717,69 @@ async def review_coverage_gap(gap_id: int, req: CoverageGapReviewRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return updated
+
+
+@router.post("/coverage-gaps/{gap_id}/action")
+async def action_coverage_gap(gap_id: int, req: CoverageGapActionRequest):
+    """Execute an action on a coverage gap (add_source / recrawl).
+
+    Calls the matching backend flow, then marks the gap as actioned.
+    """
+    from orchestrator import coverage_gap_store
+
+    existing = coverage_gap_store.get_gap(gap_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Coverage gap không tồn tại.")
+
+    valid_actions = {"add_source", "recrawl"}
+    if req.resolution not in valid_actions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolution phải là một trong: {', '.join(sorted(valid_actions))}",
+        )
+
+    payload = req.action_payload or {}
+
+    if req.resolution == "add_source":
+        action_result = _add_source_item(
+            topic=(payload.get("topic") or ""),
+            location=(payload.get("url") or ""),
+            title=(payload.get("title") or ""),
+        )
+
+    elif req.resolution == "recrawl":
+        sources = await _resolve_recrawl_sources(
+            topic=payload.get("topic"),
+            urls=payload.get("urls") or [],
+        )
+        action_result = _execute_recrawl(sources)
+    else:
+        raise HTTPException(status_code=400, detail="Action không được hỗ trợ.")
+
+    # Mark gap as actioned
+    try:
+        updated = coverage_gap_store.action_gap(
+            gap_id,
+            resolution=req.resolution,
+            action_payload={**payload, "result": action_result},
+            review_note=req.review_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "Coverage gap action executed",
+        extra={
+            "gap_id": gap_id,
+            "resolution": req.resolution,
+            "action_result": action_result,
+        },
+    )
+
+    return {
+        "gap": updated,
+        "action_result": action_result,
+    }
 
 
 @router.get("/coverage-gaps/summary")

@@ -23,7 +23,9 @@ Schema:
         review_note       TEXT,
         feedback_type     TEXT,    -- 'up' | 'down' nếu request bị vote
         created_at        REAL NOT NULL,
-        reviewed_at       REAL
+        reviewed_at       REAL,
+        action_payload    TEXT,    -- JSON: chi tiết action đã thực hiện
+        actioned_at       REAL     -- timestamp khi action hoàn thành
     )
 
 Design notes:
@@ -93,7 +95,9 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 review_note TEXT,
                 feedback_type TEXT,
                 created_at REAL NOT NULL,
-                reviewed_at REAL
+                reviewed_at REAL,
+                action_payload TEXT,
+                actioned_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_coverage_gap_created
                 ON coverage_gaps(created_at DESC);
@@ -105,6 +109,14 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 ON coverage_gaps(resolution);
             """
         )
+        # Migrate existing tables: add new columns if missing
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(coverage_gaps)").fetchall()
+        }
+        if "action_payload" not in existing_cols:
+            conn.execute("ALTER TABLE coverage_gaps ADD COLUMN action_payload TEXT")
+        if "actioned_at" not in existing_cols:
+            conn.execute("ALTER TABLE coverage_gaps ADD COLUMN actioned_at REAL")
     _initialised_paths.add(key)
 
 
@@ -241,6 +253,51 @@ def review_gap(
     return get_gap(gap_id)
 
 
+_ACTION_RESOLUTIONS = {"add_source", "recrawl"}
+
+
+def action_gap(
+    gap_id: int,
+    *,
+    resolution: str,
+    action_payload: dict | None = None,
+    review_note: str | None = None,
+) -> dict | None:
+    """Mark a gap as actioned with a concrete action payload.
+
+    Unlike review_gap, this is specifically for actions that have been
+    *executed* (e.g. source added, recrawl triggered), not just labelled.
+    """
+    if resolution not in _ACTION_RESOLUTIONS:
+        raise ValueError(f"resolution must be one of {_ACTION_RESOLUTIONS}")
+
+    _ensure_schema()
+    now = time.time()
+    payload_json = json.dumps(action_payload or {}, ensure_ascii=False)
+    with _lock, _connect() as conn:
+        conn.execute(
+            """
+            UPDATE coverage_gaps
+            SET status = 'actioned',
+                resolution = ?,
+                review_note = ?,
+                action_payload = ?,
+                reviewed_at = ?,
+                actioned_at = ?
+            WHERE id = ?
+            """,
+            (
+                resolution,
+                (review_note or "").strip() or None,
+                payload_json,
+                now,
+                now,
+                gap_id,
+            ),
+        )
+    return get_gap(gap_id)
+
+
 def count_summary() -> dict:
     """Return summary counts for admin dashboard."""
     _ensure_schema()
@@ -303,6 +360,12 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     except (json.JSONDecodeError, TypeError):
         citations_snapshot = []
 
+    action_payload_raw = row["action_payload"] or "{}"
+    try:
+        action_payload = json.loads(action_payload_raw)
+    except (json.JSONDecodeError, TypeError):
+        action_payload = {}
+
     return {
         "id": row["id"],
         "session_id": row["session_id"],
@@ -320,4 +383,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "feedback_type": row["feedback_type"],
         "created_at": row["created_at"],
         "reviewed_at": row["reviewed_at"],
+        "action_payload": action_payload,
+        "actioned_at": row["actioned_at"],
     }

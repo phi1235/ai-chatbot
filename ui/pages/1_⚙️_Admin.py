@@ -286,6 +286,37 @@ def review_coverage_gap(gap_id: int, status: str, resolution: str | None, review
         return None
 
 
+def action_coverage_gap(
+    gap_id: int, resolution: str, action_payload: dict, review_note: str = "",
+) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/coverage-gaps/{gap_id}/action",
+            json={
+                "resolution": resolution,
+                "action_payload": action_payload,
+                "review_note": review_note or None,
+            },
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
+        if r.status_code == 409:
+            st.warning(r.json().get("detail", "URL đã tồn tại."))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as exc:
+        detail = ""
+        try:
+            detail = exc.response.json().get("detail", "")
+        except Exception:
+            pass
+        st.error(f"Action thất bại: {detail or exc}")
+        return None
+    except Exception as exc:
+        st.error(f"Action thất bại: {exc}")
+        return None
+
+
 def get_coverage_gaps_summary() -> dict | None:
     try:
         r = http().get(f"{api_url()}/admin/coverage-gaps/summary")
@@ -1808,37 +1839,161 @@ def page_coverage_gaps():
                     + (f" — {item['review_note']}" if item.get("review_note") else "")
                 )
 
-            if gap_status == "new":
-                with st.form(key=f"cg-review-form-{gap_id}"):
-                    note_input = st.text_input(
-                        "Review note",
-                        placeholder="Ghi chú ngắn (optional)",
-                        key=f"cg-note-{gap_id}",
-                    )
-                    rcols = st.columns(2)
-                    with rcols[0]:
-                        status_input = st.selectbox(
-                            "Status",
-                            options=["reviewed", "actioned", "ignored"],
-                            key=f"cg-status-{gap_id}",
+            # Action history for actioned gaps
+            if gap_status == "actioned" and item.get("action_payload"):
+                ap = item["action_payload"]
+                actioned_time = ""
+                if item.get("actioned_at"):
+                    actioned_time = datetime.fromtimestamp(item["actioned_at"]).strftime("%d/%m %H:%M")
+                action_res = ap.get("result", {})
+                st.markdown(
+                    f"**Action:** {item.get('resolution', '-')} · {actioned_time}"
+                )
+                if item["resolution"] == "add_source":
+                    st.text(f"  URL: {ap.get('url', '-')}")
+                    st.text(f"  Topic: {ap.get('topic', '-')}")
+                    if ap.get("title"):
+                        st.text(f"  Title: {ap['title']}")
+                elif item["resolution"] == "recrawl":
+                    if ap.get("topic"):
+                        st.text(f"  Topic: {ap['topic']}")
+                    if ap.get("urls"):
+                        st.text(f"  URLs: {len(ap['urls'])} target(s)")
+                    if action_res.get("documents_crawled") is not None:
+                        st.text(
+                            f"  Result: {action_res.get('documents_crawled', 0)} docs, "
+                            f"{action_res.get('chunks_indexed', 0)} chunks"
                         )
-                    with rcols[1]:
-                        resolution_input = st.selectbox(
-                            "Resolution",
-                            options=[
-                                "(none)", "add_source", "recrawl", "out_of_scope",
-                                "duplicate", "retrieval_tuning", "prompt_tuning",
-                            ],
-                            key=f"cg-resolution-{gap_id}",
-                        )
-                    if st.form_submit_button("Đánh dấu", type="primary"):
-                        res_value = resolution_input if resolution_input != "(none)" else None
-                        result = review_coverage_gap(gap_id, status_input, res_value, note_input)
-                        if result:
-                            st.success("Đã cập nhật!")
-                            st.rerun()
-            elif item.get("review_note"):
+            elif gap_status != "new" and item.get("review_note"):
                 st.info(f"Note: {item['review_note']}")
+
+            # Review + Action forms for new/reviewed gaps
+            if gap_status in ("new", "reviewed"):
+                st.markdown("---")
+                review_tab, action_tab = st.tabs(["Review", "Action"])
+
+                with review_tab:
+                    with st.form(key=f"cg-review-form-{gap_id}"):
+                        note_input = st.text_input(
+                            "Review note",
+                            placeholder="Ghi chú ngắn (optional)",
+                            key=f"cg-note-{gap_id}",
+                        )
+                        rcols = st.columns(2)
+                        with rcols[0]:
+                            status_input = st.selectbox(
+                                "Status",
+                                options=["reviewed", "actioned", "ignored"],
+                                key=f"cg-status-{gap_id}",
+                            )
+                        with rcols[1]:
+                            resolution_input = st.selectbox(
+                                "Resolution",
+                                options=[
+                                    "(none)", "add_source", "recrawl", "out_of_scope",
+                                    "duplicate", "retrieval_tuning", "prompt_tuning",
+                                ],
+                                key=f"cg-resolution-{gap_id}",
+                            )
+                        if st.form_submit_button("Đánh dấu", type="primary"):
+                            res_value = resolution_input if resolution_input != "(none)" else None
+                            result = review_coverage_gap(gap_id, status_input, res_value, note_input)
+                            if result:
+                                st.success("Đã cập nhật!")
+                                st.rerun()
+
+                with action_tab:
+                    action_type = st.selectbox(
+                        "Action",
+                        options=["add_source", "recrawl"],
+                        key=f"cg-action-type-{gap_id}",
+                    )
+
+                    if action_type == "add_source":
+                        with st.form(key=f"cg-action-addsrc-{gap_id}"):
+                            default_topic = item.get("detected_topic") or ""
+                            a_topic = st.text_input(
+                                "Topic",
+                                value=default_topic,
+                                placeholder="vd: kubernetes",
+                                key=f"cg-a-topic-{gap_id}",
+                            )
+                            a_url = st.text_input(
+                                "URL",
+                                placeholder="https://docs.example.com/...",
+                                key=f"cg-a-url-{gap_id}",
+                            )
+                            a_title = st.text_input(
+                                "Title (optional)",
+                                placeholder="Tiêu đề nguồn",
+                                key=f"cg-a-title-{gap_id}",
+                            )
+                            a_note = st.text_input(
+                                "Note (optional)",
+                                placeholder="Ghi chú",
+                                key=f"cg-a-note-{gap_id}",
+                            )
+                            if st.form_submit_button("Add source", type="primary"):
+                                if not a_url.strip():
+                                    st.error("Cần nhập URL.")
+                                elif not a_topic.strip():
+                                    st.error("Cần nhập topic.")
+                                else:
+                                    with st.spinner("Đang thêm source..."):
+                                        result = action_coverage_gap(
+                                            gap_id,
+                                            "add_source",
+                                            {"topic": a_topic.strip(), "url": a_url.strip(), "title": a_title.strip()},
+                                            a_note.strip(),
+                                        )
+                                    if result:
+                                        st.success("Đã thêm source và đánh dấu actioned!")
+                                        st.rerun()
+
+                    elif action_type == "recrawl":
+                        with st.form(key=f"cg-action-recrawl-{gap_id}"):
+                            default_topic = item.get("detected_topic") or ""
+                            r_topic = st.text_input(
+                                "Recrawl topic",
+                                value=default_topic,
+                                placeholder="Topic cần recrawl (recrawl toàn bộ topic)",
+                                key=f"cg-r-topic-{gap_id}",
+                            )
+                            r_urls = st.text_area(
+                                "Hoặc URLs cụ thể (mỗi dòng 1 URL)",
+                                placeholder="https://docs.example.com/page1\nhttps://docs.example.com/page2",
+                                height=80,
+                                key=f"cg-r-urls-{gap_id}",
+                            )
+                            r_note = st.text_input(
+                                "Note (optional)",
+                                placeholder="Ghi chú",
+                                key=f"cg-r-note-{gap_id}",
+                            )
+                            if st.form_submit_button("Recrawl", type="primary"):
+                                url_list = [
+                                    u.strip() for u in (r_urls or "").splitlines()
+                                    if u.strip() and not u.strip().startswith("#")
+                                ]
+                                if not r_topic.strip() and not url_list:
+                                    st.error("Cần nhập topic hoặc ít nhất 1 URL.")
+                                else:
+                                    payload: dict = {}
+                                    if r_topic.strip():
+                                        payload["topic"] = r_topic.strip()
+                                    if url_list:
+                                        payload["urls"] = url_list
+                                    with st.spinner("Đang recrawl..."):
+                                        result = action_coverage_gap(
+                                            gap_id, "recrawl", payload, r_note.strip(),
+                                        )
+                                    if result:
+                                        ar = result.get("action_result", {})
+                                        st.success(
+                                            f"Recrawl xong: {ar.get('documents_crawled', 0)} docs, "
+                                            f"{ar.get('chunks_indexed', 0)} chunks. Gap đã actioned!"
+                                        )
+                                        st.rerun()
 
 
 # ─── Page: Feedback ─────────────────────────────────────────────────────────
