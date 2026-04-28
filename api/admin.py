@@ -1009,6 +1009,48 @@ async def update_feedback_action_status(action_id: int, req: ActionItemStatusReq
     return updated
 
 
+@router.post("/feedback-actions/{action_id}/execute")
+async def execute_feedback_action_item(action_id: int):
+    """Execute a feedback action item via the lightweight execution bridge.
+
+    Supported action types for MVP:
+      - create_coverage_gap → creates a coverage gap record from feedback context
+      - recrawl_source      → topic-based recrawl when detected_topic is present
+
+    Other action types (improve_retrieval, adjust_prompt, ignore) are blocked
+    with a clear reason. Returns the updated action item with execution metadata.
+    """
+    from orchestrator import feedback_action_store
+    from orchestrator.feedback_action_executor import execute_action_item
+
+    existing = feedback_action_store.get_action_item(action_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Action item không tồn tại.")
+
+    try:
+        updated = execute_action_item(action_id, sources_dir=SOURCES_DIR)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "Feedback action execution failed",
+            extra={"action_id": action_id, "error": str(exc)},
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"Execution failed: {exc}") from exc
+
+    logger.info(
+        "Feedback action executed",
+        extra={
+            "action_id": action_id,
+            "suggested_action": existing.get("suggested_action"),
+            "execution_status": updated.get("execution_status"),
+            "execution_type": updated.get("execution_type"),
+        },
+    )
+    return updated
+
+
 @router.get("/feedback-actions/summary")
 async def feedback_actions_summary():
     """Quick summary counts for the feedback action queue dashboard."""

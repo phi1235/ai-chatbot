@@ -18,16 +18,25 @@ Schema:
                          -- pending | accepted | done | ignored
         owner_note       TEXT,
         created_at       REAL NOT NULL,
-        updated_at       REAL NOT NULL
+        updated_at       REAL NOT NULL,
+        -- Execution bridge metadata (added in v2)
+        execution_status  TEXT NOT NULL DEFAULT 'idle',
+                          -- idle | prepared | executed | blocked
+        execution_type    TEXT,    -- coverage_gap_review | recrawl | null
+        execution_payload TEXT,    -- JSON compact payload
+        execution_result  TEXT,    -- JSON compact result
+        executed_at       REAL     -- nullable timestamp
     )
 
 Design notes:
 - One active (pending | accepted) action item per feedback_id max.
 - Lazy init + thread-safe via _lock.
 - Heuristic mapping kept explicit and simple.
+- execution_status tracks whether the item has been bridged into a workflow.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -109,7 +118,12 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 status           TEXT NOT NULL DEFAULT 'pending',
                 owner_note       TEXT,
                 created_at       REAL NOT NULL,
-                updated_at       REAL NOT NULL
+                updated_at       REAL NOT NULL,
+                execution_status  TEXT NOT NULL DEFAULT 'idle',
+                execution_type    TEXT,
+                execution_payload TEXT,
+                execution_result  TEXT,
+                executed_at       REAL
             );
             CREATE INDEX IF NOT EXISTS idx_fa_feedback_id
                 ON feedback_actions(feedback_id);
@@ -121,7 +135,29 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 ON feedback_actions(root_cause);
             CREATE INDEX IF NOT EXISTS idx_fa_created
                 ON feedback_actions(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_fa_execution_status
+                ON feedback_actions(execution_status);
             """
+        )
+        # Migrate existing tables: add execution columns if missing
+        existing_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(feedback_actions)").fetchall()
+        }
+        if "execution_status" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE feedback_actions ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'idle'"
+            )
+        if "execution_type" not in existing_cols:
+            conn.execute("ALTER TABLE feedback_actions ADD COLUMN execution_type TEXT")
+        if "execution_payload" not in existing_cols:
+            conn.execute("ALTER TABLE feedback_actions ADD COLUMN execution_payload TEXT")
+        if "execution_result" not in existing_cols:
+            conn.execute("ALTER TABLE feedback_actions ADD COLUMN execution_result TEXT")
+        if "executed_at" not in existing_cols:
+            conn.execute("ALTER TABLE feedback_actions ADD COLUMN executed_at REAL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fa_execution_status "
+            "ON feedback_actions(execution_status)"
         )
     _initialised_paths.add(key)
 
@@ -317,6 +353,67 @@ def count_summary() -> dict:
     }
 
 
+_VALID_EXECUTION_STATUSES = frozenset({"idle", "prepared", "executed", "blocked"})
+
+
+def set_execution_metadata(
+    action_id: int,
+    *,
+    execution_status: str,
+    execution_type: str | None = None,
+    execution_payload: dict | None = None,
+    execution_result: dict | None = None,
+    executed_at: float | None = None,
+) -> dict | None:
+    """Set execution metadata on a feedback action item.
+
+    Updates all execution fields atomically. Returns the updated record,
+    or None if not found. Raises ValueError for invalid execution_status.
+    """
+    if execution_status not in _VALID_EXECUTION_STATUSES:
+        raise ValueError(
+            f"execution_status must be one of: {', '.join(sorted(_VALID_EXECUTION_STATUSES))}"
+        )
+
+    _ensure_schema()
+    now = time.time()
+    payload_json = (
+        json.dumps(execution_payload, ensure_ascii=False)
+        if execution_payload is not None
+        else None
+    )
+    result_json = (
+        json.dumps(execution_result, ensure_ascii=False)
+        if execution_result is not None
+        else None
+    )
+
+    with _lock, _connect() as conn:
+        conn.execute(
+            """
+            UPDATE feedback_actions
+            SET execution_status  = ?,
+                execution_type    = ?,
+                execution_payload = ?,
+                execution_result  = ?,
+                executed_at       = ?,
+                updated_at        = ?
+            WHERE id = ?
+            """,
+            (
+                execution_status,
+                execution_type,
+                payload_json,
+                result_json,
+                executed_at,
+                now,
+                action_id,
+            ),
+        )
+
+    return get_action_item(action_id)
+
+
 # ─── Internal ────────────────────────────────────────────────────────────────
 
 def _default_reason(root_cause: str | None, suggested_action: str) -> str:
@@ -346,6 +443,15 @@ def _default_reason(root_cause: str | None, suggested_action: str) -> str:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
+    try:
+        execution_payload = json.loads(row["execution_payload"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        execution_payload = {}
+    try:
+        execution_result = json.loads(row["execution_result"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        execution_result = {}
+
     return {
         "id": row["id"],
         "feedback_id": row["feedback_id"],
@@ -358,4 +464,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "owner_note": row["owner_note"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        # Execution bridge metadata
+        "execution_status": row["execution_status"] or "idle",
+        "execution_type": row["execution_type"],
+        "execution_payload": execution_payload,
+        "execution_result": execution_result,
+        "executed_at": row["executed_at"],
     }

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +30,9 @@ def client(tmp_path, monkeypatch):
     import orchestrator.feedback_action_store as fas_mod
     fas_mod._initialised_paths.clear()
     importlib.reload(fas_mod)
+    import orchestrator.coverage_gap_store as cgs_mod
+    cgs_mod._initialised_paths.clear()
+    importlib.reload(cgs_mod)
     import api.admin as admin_mod
     importlib.reload(admin_mod)
 
@@ -352,3 +357,203 @@ def test_full_feedback_to_action_flow(client):
     r7 = client.get("/admin/feedback-actions/summary")
     assert r7.json()["total_done"] == 1
     assert r7.json()["total_pending"] == 0
+
+
+# ─── POST /admin/feedback-actions/{id}/execute ───────────────────────────────
+
+def _create_action_item(client, *, root_cause: str, topic: str | None = None) -> dict:
+    """Helper: seed feedback → review → create action item. Return action item dict."""
+    fb_id = _seed_feedback(client, root_cause=root_cause, topic=topic)
+    r = client.post(f"/admin/feedback/{fb_id}/action-item")
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_execute_not_found(client):
+    r = client.post("/admin/feedback-actions/9999/execute")
+    assert r.status_code == 404
+
+
+def test_execute_create_coverage_gap_success(client):
+    """create_coverage_gap action → creates a coverage gap, returns execution_status=executed."""
+    action = _create_action_item(client, root_cause="retrieval_miss", topic="kubernetes")
+    action_id = action["id"]
+
+    r = client.post(f"/admin/feedback-actions/{action_id}/execute")
+    assert r.status_code == 200
+    data = r.json()
+
+    assert data["execution_status"] == "executed"
+    assert data["execution_type"] == "coverage_gap_review"
+    assert data["executed_at"] is not None
+
+    result = data["execution_result"]
+    assert "coverage_gap_id" in result
+    assert result["coverage_gap_id"] > 0
+    assert "created" in result["summary"]
+
+    # Verify the coverage gap was actually persisted
+    import orchestrator.coverage_gap_store as cgs
+    gap = cgs.get_gap(result["coverage_gap_id"])
+    assert gap is not None
+    assert gap["detected_topic"] == "kubernetes"
+    assert "feedback_action_queue" in gap["gap_signals"]
+
+
+def test_execute_create_coverage_gap_with_topic_and_hint(client):
+    """create_coverage_gap: query_hint + topic set in action context."""
+    # Submit feedback with rewritten_query (becomes query_hint on action item)
+    r_fb = client.post("/feedback", json={
+        "question": "How to scale pods?",
+        "answer": "Use HPA.",
+        "feedback_type": "down",
+        "detected_topic": "kubernetes",
+        "rewritten_query": "kubernetes pod autoscaling",
+    })
+    assert r_fb.status_code == 200
+    fb_id = r_fb.json()["id"]
+
+    client.post(f"/admin/feedback/{fb_id}/review",
+                json={"review_status": "reviewed", "root_cause": "retrieval_miss"})
+    r_action = client.post(f"/admin/feedback/{fb_id}/action-item")
+    assert r_action.status_code == 200
+    action = r_action.json()
+    assert action["query_hint"] == "kubernetes pod autoscaling"
+
+    r = client.post(f"/admin/feedback-actions/{action['id']}/execute")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["execution_status"] == "executed"
+
+    # Coverage gap question should use the query_hint
+    import orchestrator.coverage_gap_store as cgs
+    gap = cgs.get_gap(data["execution_result"]["coverage_gap_id"])
+    assert gap["question"] == "kubernetes pod autoscaling"
+    assert gap["rewritten_query"] == "kubernetes pod autoscaling"
+    assert gap["detected_topic"] == "kubernetes"
+
+
+def test_execute_create_coverage_gap_no_context_uses_fallback(client):
+    """create_coverage_gap with no topic/hint still succeeds via fallback question."""
+    action = _create_action_item(client, root_cause="retrieval_miss")  # no topic
+    action_id = action["id"]
+
+    r = client.post(f"/admin/feedback-actions/{action_id}/execute")
+    assert r.status_code == 200
+    assert r.json()["execution_status"] == "executed"
+
+    import orchestrator.coverage_gap_store as cgs
+    gap_id = r.json()["execution_result"]["coverage_gap_id"]
+    gap = cgs.get_gap(gap_id)
+    assert gap is not None
+    assert gap["question"]  # some fallback question was set
+
+
+def test_execute_recrawl_blocked_no_topic(client):
+    """recrawl_source with no detected_topic → blocked with clear reason."""
+    action = _create_action_item(client, root_cause="stale_source_mix", topic=None)
+    action_id = action["id"]
+
+    r = client.post(f"/admin/feedback-actions/{action_id}/execute")
+    assert r.status_code == 200
+    data = r.json()
+
+    assert data["execution_status"] == "blocked"
+    assert data["execution_type"] == "recrawl"
+    result = data["execution_result"]
+    assert "topic" in result["reason"].lower() or "detected_topic" in result["reason"].lower()
+
+
+def test_execute_recrawl_blocked_no_sources_file(client):
+    """recrawl_source with topic but no sources/<topic>.json → blocked."""
+    action = _create_action_item(
+        client, root_cause="stale_source_mix", topic="nonexistent_topic"
+    )
+    r = client.post(f"/admin/feedback-actions/{action['id']}/execute")
+    assert r.status_code == 200
+    data = r.json()
+
+    assert data["execution_status"] == "blocked"
+    assert "nonexistent_topic" in data["execution_result"]["reason"]
+
+
+def test_execute_recrawl_success(client, tmp_path):
+    """recrawl_source with topic + sources file + mocked pipeline → executed."""
+    # Seed a topic sources file
+    sources_items = [
+        {"location": "https://k8s.io/docs", "topic": "kubernetes", "title": "K8s docs", "source": "website"}
+    ]
+    (tmp_path / "sources" / "kubernetes.json").write_text(json.dumps(sources_items))
+
+    action = _create_action_item(client, root_cause="stale_source_mix", topic="kubernetes")
+    action_id = action["id"]
+
+    fake_docs = [{"id": "d1", "title": "T", "content": "c", "topic": "kubernetes", "url": "u"}]
+    fake_chunks = [{"chunk_id": "d1-1", "doc_id": "d1", "title": "T", "content": "c", "topic": "kubernetes"}]
+
+    with patch("crawler.fetch_data.crawl_sources", return_value=fake_docs), \
+         patch("processor.chunker.process_documents", return_value=fake_chunks), \
+         patch("processor.embedder.embed_and_store"):
+        r = client.post(f"/admin/feedback-actions/{action_id}/execute")
+
+    assert r.status_code == 200
+    data = r.json()
+
+    assert data["execution_status"] == "executed"
+    assert data["execution_type"] == "recrawl"
+    assert data["executed_at"] is not None
+
+    result = data["execution_result"]
+    assert result["documents_crawled"] == 1
+    assert result["chunks_indexed"] == 1
+    assert "recrawled" in result["summary"]
+
+    payload = data["execution_payload"]
+    assert payload["topic"] == "kubernetes"
+    assert payload["sources_count"] == 1
+
+
+def test_execute_unsupported_action_blocked(client):
+    """improve_retrieval, adjust_prompt, ignore → blocked with clear reason."""
+    for root_cause in ("insufficient_context", "hallucination", "other"):
+        action = _create_action_item(client, root_cause=root_cause)
+        r = client.post(f"/admin/feedback-actions/{action['id']}/execute")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["execution_status"] == "blocked"
+        assert "not executable" in data["execution_result"]["reason"]
+        assert "MVP" in data["execution_result"]["reason"]
+
+
+def test_execute_response_contains_all_execution_fields(client):
+    """Response always includes all execution metadata fields."""
+    action = _create_action_item(client, root_cause="retrieval_miss", topic="kubernetes")
+    r = client.post(f"/admin/feedback-actions/{action['id']}/execute")
+    assert r.status_code == 200
+    data = r.json()
+
+    for field in ("execution_status", "execution_type", "execution_payload",
+                  "execution_result", "executed_at"):
+        assert field in data, f"Missing field: {field}"
+
+
+def test_execute_updates_existing_item_status(client):
+    """After execute, the action item in the list also shows updated execution_status."""
+    action = _create_action_item(client, root_cause="retrieval_miss", topic="k8s")
+    action_id = action["id"]
+
+    client.post(f"/admin/feedback-actions/{action_id}/execute")
+
+    r = client.get("/admin/feedback-actions")
+    items = {i["id"]: i for i in r.json()["items"]}
+    assert items[action_id]["execution_status"] == "executed"
+
+
+def test_execute_recrawl_empty_sources_file_blocked(client, tmp_path):
+    """recrawl_source with empty sources array → blocked."""
+    (tmp_path / "sources" / "emptytopic.json").write_text("[]")
+    action = _create_action_item(client, root_cause="stale_source_mix", topic="emptytopic")
+    r = client.post(f"/admin/feedback-actions/{action['id']}/execute")
+    assert r.status_code == 200
+    assert r.json()["execution_status"] == "blocked"
+    assert "No sources configured" in r.json()["execution_result"]["reason"]

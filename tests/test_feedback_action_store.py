@@ -310,3 +310,106 @@ def test_updated_at_changes_on_status_update():
     time.sleep(0.01)
     updated = fas.update_action_status(item["id"], status="accepted")
     assert updated["updated_at"] >= item["updated_at"]
+
+
+# ─── Execution metadata: defaults ─────────────────────────────────────────────
+
+def test_new_item_has_idle_execution_status():
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1, root_cause="retrieval_miss")
+    assert item["execution_status"] == "idle"
+    assert item["execution_type"] is None
+    assert item["execution_payload"] == {}
+    assert item["execution_result"] == {}
+    assert item["executed_at"] is None
+
+
+def test_execution_fields_present_on_list():
+    fas = _store()
+    fas.create_action_item(feedback_id=1, root_cause="retrieval_miss")
+    items = fas.list_action_items()
+    assert len(items) == 1
+    item = items[0]
+    assert "execution_status" in item
+    assert item["execution_status"] == "idle"
+
+
+# ─── set_execution_metadata ───────────────────────────────────────────────────
+
+def test_set_execution_metadata_executed():
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1, root_cause="retrieval_miss")
+    now = time.time()
+    updated = fas.set_execution_metadata(
+        item["id"],
+        execution_status="executed",
+        execution_type="coverage_gap_review",
+        execution_payload={"gap_id": 42, "question": "q"},
+        execution_result={"coverage_gap_id": 42, "summary": "coverage gap #42 created"},
+        executed_at=now,
+    )
+    assert updated is not None
+    assert updated["execution_status"] == "executed"
+    assert updated["execution_type"] == "coverage_gap_review"
+    assert updated["execution_payload"]["gap_id"] == 42
+    assert updated["execution_result"]["coverage_gap_id"] == 42
+    assert updated["executed_at"] == now
+
+
+def test_set_execution_metadata_blocked():
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1, root_cause="stale_source_mix")
+    updated = fas.set_execution_metadata(
+        item["id"],
+        execution_status="blocked",
+        execution_type="recrawl",
+        execution_result={"reason": "Missing detected_topic."},
+    )
+    assert updated is not None
+    assert updated["execution_status"] == "blocked"
+    assert updated["execution_type"] == "recrawl"
+    assert updated["execution_result"]["reason"] == "Missing detected_topic."
+    assert updated["executed_at"] is None
+
+
+def test_set_execution_metadata_overwrite():
+    """Second call overwrites first execution metadata."""
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1, root_cause="retrieval_miss")
+    fas.set_execution_metadata(
+        item["id"],
+        execution_status="blocked",
+        execution_result={"reason": "first block"},
+    )
+    updated = fas.set_execution_metadata(
+        item["id"],
+        execution_status="executed",
+        execution_type="coverage_gap_review",
+        execution_result={"coverage_gap_id": 5, "summary": "gap #5 created"},
+        executed_at=time.time(),
+    )
+    assert updated["execution_status"] == "executed"
+    assert updated["execution_result"]["coverage_gap_id"] == 5
+
+
+def test_set_execution_metadata_invalid_status():
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1)
+    with pytest.raises(ValueError, match="execution_status"):
+        fas.set_execution_metadata(item["id"], execution_status="running")
+
+
+def test_set_execution_metadata_not_found_returns_none():
+    fas = _store()
+    result = fas.set_execution_metadata(9999, execution_status="blocked")
+    assert result is None
+
+
+def test_set_execution_metadata_updates_updated_at():
+    fas = _store()
+    item = fas.create_action_item(feedback_id=1)
+    time.sleep(0.01)
+    updated = fas.set_execution_metadata(
+        item["id"], execution_status="blocked", execution_result={"reason": "no topic"}
+    )
+    assert updated["updated_at"] > item["updated_at"]

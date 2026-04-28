@@ -312,6 +312,19 @@ def update_feedback_action_status(
         return None
 
 
+def execute_feedback_action(action_id: int) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/feedback-actions/{action_id}/execute",
+            timeout=httpx.Timeout(120.0, connect=5.0, read=120.0),
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Execute failed: {exc}")
+        return None
+
+
 def get_coverage_gaps(
     status: str | None = None,
     detected_topic: str | None = None,
@@ -2560,6 +2573,15 @@ _STATUS_COLORS = {
     "ignored": ("var(--text-subtle)", "#f9fafb"),
 }
 
+_EXEC_STATUS_COLORS = {
+    "idle": ("var(--text-subtle)", "#f9fafb"),
+    "prepared": ("var(--accent)", "var(--accent-soft)"),
+    "executed": ("var(--ok)", "#ecfdf5"),
+    "blocked": ("#b91c1c", "#fef2f2"),
+}
+
+_EXECUTABLE_ACTIONS = frozenset({"create_coverage_gap", "recrawl_source"})
+
 
 def page_feedback_actions():
     render_page_header(
@@ -2642,15 +2664,25 @@ def page_feedback_actions():
         fb_id = item["feedback_id"]
         act = item["suggested_action"]
         status = item["status"]
+        exec_status = item.get("execution_status") or "idle"
         created = datetime.fromtimestamp(item["created_at"]).strftime("%d/%m %H:%M")
         updated = datetime.fromtimestamp(item["updated_at"]).strftime("%d/%m %H:%M")
 
         act_label = _ACTION_LABELS.get(act, act)
         act_color, act_bg = _ACTION_COLORS.get(act, ("var(--text-muted)", "#f3f4f6"))
         st_color, st_bg = _STATUS_COLORS.get(status, ("var(--text-muted)", "#f3f4f6"))
+        ex_color, ex_bg = _EXEC_STATUS_COLORS.get(exec_status, ("var(--text-subtle)", "#f9fafb"))
 
         topic = item.get("detected_topic") or "-"
         root_cause = item.get("root_cause") or "-"
+
+        # Build compact execution summary for expander label
+        exec_summary = ""
+        exec_result = item.get("execution_result") or {}
+        if exec_status == "executed":
+            exec_summary = f" · {exec_result.get('summary', 'executed')}"
+        elif exec_status == "blocked":
+            exec_summary = f" · blocked: {exec_result.get('reason', '')[:40]}"
 
         header_html = (
             '<div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.3rem;">'
@@ -2658,13 +2690,15 @@ def page_feedback_actions():
             f'border-radius:4px; background:{act_bg}; color:{act_color}">{act_label.upper()}</span>'
             f'<span style="font-size:0.75rem; font-weight:600; padding:0.1rem 0.5rem; '
             f'border-radius:4px; background:{st_bg}; color:{st_color}">{status.upper()}</span>'
+            f'<span style="font-size:0.75rem; font-weight:600; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{ex_bg}; color:{ex_color}">{exec_status.upper()}</span>'
             f'<span style="font-size:0.74rem; color:var(--text-subtle)">[{topic}]</span>'
             f'<span style="font-size:0.74rem; color:var(--text-subtle)">{created}</span>'
             f'<span style="font-size:0.74rem; color:var(--text-subtle)">fb#{fb_id} · ai#{action_id}</span>'
             '</div>'
         )
 
-        expander_label = f"[{act_label}] [{status}] fb#{fb_id} — {root_cause}"
+        expander_label = f"[{act_label}] [{status}] fb#{fb_id} — {root_cause}{exec_summary}"
         with st.expander(expander_label):
             st.markdown(header_html, unsafe_allow_html=True)
 
@@ -2687,6 +2721,43 @@ def page_feedback_actions():
 
             if item.get("owner_note"):
                 st.info(f"Note: {item['owner_note']}")
+
+            # ── Execution bridge ────────────────────────────────────────
+            if act in _EXECUTABLE_ACTIONS:
+                st.markdown("---")
+                ecols = st.columns([3, 1])
+                with ecols[0]:
+                    if exec_status == "executed":
+                        st.success(exec_result.get("summary", "Executed."))
+                        if item.get("execution_type") == "coverage_gap_review":
+                            gap_id = exec_result.get("coverage_gap_id")
+                            if gap_id:
+                                st.caption(f"Coverage gap #{gap_id} created.")
+                        elif item.get("execution_type") == "recrawl":
+                            st.caption(
+                                f"Docs crawled: {exec_result.get('documents_crawled', 0)}  "
+                                f"· Chunks: {exec_result.get('chunks_indexed', 0)}"
+                            )
+                    elif exec_status == "blocked":
+                        st.warning(f"Blocked: {exec_result.get('reason', 'unknown reason')}")
+                    else:
+                        st.caption(f"Execution: {exec_status}")
+                with ecols[1]:
+                    if st.button(
+                        "Execute",
+                        key=f"aq-exec-{action_id}",
+                        use_container_width=True,
+                        help=f"Bridge this action into the {act_label} workflow.",
+                    ):
+                        result = execute_feedback_action(action_id)
+                        if result:
+                            new_exec = result.get("execution_status", "")
+                            new_result = result.get("execution_result") or {}
+                            if new_exec == "executed":
+                                st.success(new_result.get("summary", "Executed."))
+                            elif new_exec == "blocked":
+                                st.warning(f"Blocked: {new_result.get('reason', '')}")
+                            st.rerun()
 
             # ── Status update form ──────────────────────────────────────
             if status not in ("done", "ignored"):
