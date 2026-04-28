@@ -277,6 +277,12 @@ class _FeedbackSubmit(_BaseModel):
     answer: str
     feedback_type: str  # 'up' | 'down'
     note: str | None = None
+    # retrieval debug snapshot (optional)
+    rewritten_query: str | None = None
+    detected_topic: str | None = None
+    retrieval_count: int | None = None
+    citations_snapshot: list[dict] | None = None
+    trace_snapshot: dict | None = None
 
 
 @app.post("/feedback")
@@ -297,6 +303,11 @@ async def submit_feedback(req: _FeedbackSubmit):
             session_id=req.session_id,
             message_id=req.message_id,
             note=req.note,
+            rewritten_query=req.rewritten_query,
+            detected_topic=req.detected_topic,
+            retrieval_count=req.retrieval_count,
+            citations_snapshot=req.citations_snapshot,
+            trace_snapshot=req.trace_snapshot,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

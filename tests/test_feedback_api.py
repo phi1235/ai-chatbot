@@ -306,6 +306,134 @@ def test_feedback_summary(client):
     assert data["reviewed"] == 0
 
 
+# ─── Debug snapshot fields ───────────────────────────────────────────────────
+
+def test_submit_feedback_with_snapshot(client):
+    body = {
+        "question": "How to scale pods?",
+        "answer": "Use HPA.",
+        "feedback_type": "down",
+        "session_id": "sess-snap",
+        "rewritten_query": "scaling pods kubernetes",
+        "detected_topic": "kubernetes",
+        "retrieval_count": 3,
+        "citations_snapshot": [{"title": "K8s docs", "url": "https://k8s.io", "score": 0.9}],
+        "trace_snapshot": {"request_id": "r1", "cache_hit": False},
+    }
+    r = client.post("/feedback", json=body)
+    assert r.status_code == 200
+
+    # Verify the snapshot fields are returned via admin list
+    r2 = client.get("/admin/feedback")
+    item = r2.json()["items"][0]
+    assert item["rewritten_query"] == "scaling pods kubernetes"
+    assert item["detected_topic"] == "kubernetes"
+    assert item["retrieval_count"] == 3
+    assert len(item["citations_snapshot"]) == 1
+    assert item["citations_snapshot"][0]["title"] == "K8s docs"
+    assert item["trace_snapshot"]["request_id"] == "r1"
+
+
+def test_submit_feedback_without_snapshot_backward_compat(client):
+    """Old clients omitting snapshot fields should still work."""
+    body = {
+        "question": "Old question",
+        "answer": "Old answer",
+        "feedback_type": "up",
+    }
+    r = client.post("/feedback", json=body)
+    assert r.status_code == 200
+
+    r2 = client.get("/admin/feedback")
+    item = r2.json()["items"][0]
+    assert item["rewritten_query"] is None
+    assert item["citations_snapshot"] == []
+    assert item["trace_snapshot"] == {}
+
+
+# ─── Root cause classification ───────────────────────────────────────────────
+
+def test_review_with_root_cause(client):
+    r = client.post("/feedback", json={
+        "question": "Q", "answer": "A", "feedback_type": "down",
+    })
+    fb_id = r.json()["id"]
+
+    r2 = client.post(
+        f"/admin/feedback/{fb_id}/review",
+        json={
+            "review_note": "Missing source",
+            "review_status": "reviewed",
+            "root_cause": "retrieval_miss",
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["root_cause"] == "retrieval_miss"
+
+
+def test_review_with_invalid_root_cause(client):
+    r = client.post("/feedback", json={
+        "question": "Q", "answer": "A", "feedback_type": "down",
+    })
+    fb_id = r.json()["id"]
+
+    r2 = client.post(
+        f"/admin/feedback/{fb_id}/review",
+        json={"review_status": "reviewed", "root_cause": "invalid_value"},
+    )
+    assert r2.status_code == 400
+
+
+def test_list_feedback_filter_by_root_cause(client):
+    r1 = client.post("/feedback", json={"question": "Q1", "answer": "A1", "feedback_type": "down"})
+    r2 = client.post("/feedback", json={"question": "Q2", "answer": "A2", "feedback_type": "down"})
+    fb_id1 = r1.json()["id"]
+    fb_id2 = r2.json()["id"]
+
+    client.post(f"/admin/feedback/{fb_id1}/review", json={
+        "review_status": "reviewed", "root_cause": "retrieval_miss",
+    })
+    client.post(f"/admin/feedback/{fb_id2}/review", json={
+        "review_status": "reviewed", "root_cause": "hallucination",
+    })
+
+    r = client.get("/admin/feedback", params={"root_cause": "retrieval_miss"})
+    assert r.status_code == 200
+    assert r.json()["count"] == 1
+    assert r.json()["items"][0]["question"] == "Q1"
+
+
+def test_list_feedback_filter_invalid_root_cause(client):
+    r = client.get("/admin/feedback", params={"root_cause": "nonexistent"})
+    assert r.status_code == 400
+
+
+# ─── Enhanced summary ────────────────────────────────────────────────────────
+
+def test_feedback_summary_includes_root_cause_breakdown(client):
+    r1 = client.post("/feedback", json={
+        "question": "Q1", "answer": "A1", "feedback_type": "down",
+        "detected_topic": "k8s",
+    })
+    r2 = client.post("/feedback", json={
+        "question": "Q2", "answer": "A2", "feedback_type": "down",
+        "detected_topic": "k8s",
+    })
+    client.post(
+        f"/admin/feedback/{r1.json()['id']}/review",
+        json={"review_status": "reviewed", "root_cause": "retrieval_miss"},
+    )
+    client.post(
+        f"/admin/feedback/{r2.json()['id']}/review",
+        json={"review_status": "reviewed", "root_cause": "retrieval_miss"},
+    )
+
+    r = client.get("/admin/feedback/summary")
+    data = r.json()
+    assert data["by_root_cause"]["retrieval_miss"] == 2
+    assert data["top_down_topics"]["k8s"] == 2
+
+
 # ─── Integration: full flow ──────────────────────────────────────────────────
 
 def test_full_feedback_flow(client):
@@ -342,3 +470,51 @@ def test_full_feedback_flow(client):
     # Verify it no longer shows as pending
     r4 = client.get("/admin/feedback", params={"review_status": "pending"})
     assert r4.json()["count"] == 0
+
+
+def test_full_debug_feedback_flow(client):
+    """Full flow: submit with snapshot -> admin reviews with root cause -> filter by root cause."""
+    # User submits feedback with debug snapshot
+    r1 = client.post("/feedback", json={
+        "question": "How to configure ingress?",
+        "answer": "You can use nginx.",
+        "feedback_type": "down",
+        "session_id": "debug-sess",
+        "note": "Answer is too generic",
+        "rewritten_query": "configure kubernetes ingress controller",
+        "detected_topic": "kubernetes",
+        "retrieval_count": 2,
+        "citations_snapshot": [{"title": "Nginx docs", "url": "https://nginx.org"}],
+        "trace_snapshot": {"request_id": "req-42", "latency_ms": 1200},
+    })
+    assert r1.status_code == 200
+    fb_id = r1.json()["id"]
+
+    # Admin sees rich context
+    r2 = client.get("/admin/feedback")
+    item = r2.json()["items"][0]
+    assert item["rewritten_query"] == "configure kubernetes ingress controller"
+    assert item["detected_topic"] == "kubernetes"
+    assert item["retrieval_count"] == 2
+    assert item["citations_snapshot"][0]["title"] == "Nginx docs"
+
+    # Admin reviews with root cause
+    r3 = client.post(
+        f"/admin/feedback/{fb_id}/review",
+        json={
+            "review_note": "Need ingress-specific source",
+            "review_status": "actioned",
+            "root_cause": "insufficient_context",
+        },
+    )
+    assert r3.status_code == 200
+    assert r3.json()["root_cause"] == "insufficient_context"
+
+    # Filter by root cause works
+    r4 = client.get("/admin/feedback", params={"root_cause": "insufficient_context"})
+    assert r4.json()["count"] == 1
+
+    # Summary reflects root cause
+    r5 = client.get("/admin/feedback/summary")
+    assert r5.json()["by_root_cause"]["insufficient_context"] == 1
+    assert r5.json()["top_down_topics"]["kubernetes"] == 1

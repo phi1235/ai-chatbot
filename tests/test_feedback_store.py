@@ -245,7 +245,13 @@ def test_mark_reviewed_invalid_status_raises():
 def test_count_summary_empty():
     fs = _store()
     s = fs.count_summary()
-    assert s == {"total": 0, "total_down": 0, "total_up": 0, "down_pending": 0, "reviewed": 0}
+    assert s["total"] == 0
+    assert s["total_down"] == 0
+    assert s["total_up"] == 0
+    assert s["down_pending"] == 0
+    assert s["reviewed"] == 0
+    assert s["by_root_cause"] == {}
+    assert s["top_down_topics"] == {}
 
 
 def test_count_summary():
@@ -261,3 +267,119 @@ def test_count_summary():
     assert s["total_down"] == 2
     assert s["down_pending"] == 1
     assert s["reviewed"] == 1
+
+
+# ─── debug snapshot fields ───────────────────────────────────────────────────
+
+def test_add_feedback_with_snapshot_fields():
+    fs = _store()
+    citations = [{"title": "Doc A", "url": "https://a.com", "score": 0.9}]
+    trace = {"request_id": "r1", "detected_topic": "k8s", "retrieval_count": 3}
+    fid = fs.add_feedback(
+        question="How to scale pods?",
+        answer="Use HPA.",
+        feedback_type="down",
+        session_id="sess-snap",
+        rewritten_query="scaling pods kubernetes",
+        detected_topic="kubernetes",
+        retrieval_count=3,
+        citations_snapshot=citations,
+        trace_snapshot=trace,
+    )
+    record = fs.get_feedback(fid)
+    assert record["rewritten_query"] == "scaling pods kubernetes"
+    assert record["detected_topic"] == "kubernetes"
+    assert record["retrieval_count"] == 3
+    assert len(record["citations_snapshot"]) == 1
+    assert record["citations_snapshot"][0]["title"] == "Doc A"
+    assert record["trace_snapshot"]["request_id"] == "r1"
+    assert record["root_cause"] is None
+
+
+def test_add_feedback_without_snapshot_fields():
+    """Old callers without snapshot fields should still work."""
+    fs = _store()
+    fid = fs.add_feedback(question="Q", answer="A", feedback_type="up")
+    record = fs.get_feedback(fid)
+    assert record["rewritten_query"] is None
+    assert record["detected_topic"] is None
+    assert record["retrieval_count"] is None
+    assert record["citations_snapshot"] == []
+    assert record["trace_snapshot"] == {}
+    assert record["root_cause"] is None
+
+
+# ─── root cause ──────────────────────────────────────────────────────────────
+
+def test_mark_reviewed_with_root_cause():
+    fs = _store()
+    fid = fs.add_feedback(question="Q", answer="A", feedback_type="down")
+    result = fs.mark_reviewed(fid, root_cause="retrieval_miss", review_status="reviewed")
+    assert result["root_cause"] == "retrieval_miss"
+    assert result["reviewed"] is True
+
+
+def test_mark_reviewed_invalid_root_cause():
+    fs = _store()
+    fid = fs.add_feedback(question="Q", answer="A", feedback_type="down")
+    with pytest.raises(ValueError, match="root_cause"):
+        fs.mark_reviewed(fid, root_cause="invalid_cause")
+
+
+def test_mark_reviewed_preserves_root_cause_when_none():
+    """If root_cause is None on subsequent review, keep existing value."""
+    fs = _store()
+    fid = fs.add_feedback(question="Q", answer="A", feedback_type="down")
+    fs.mark_reviewed(fid, root_cause="hallucination")
+    result = fs.mark_reviewed(fid, review_note="updated note")
+    assert result["root_cause"] == "hallucination"
+
+
+# ─── root cause filter ──────────────────────────────────────────────────────
+
+def test_list_feedbacks_filter_by_root_cause():
+    fs = _store()
+    fid1 = fs.add_feedback(question="Q1", answer="A1", feedback_type="down")
+    fid2 = fs.add_feedback(question="Q2", answer="A2", feedback_type="down")
+    fs.add_feedback(question="Q3", answer="A3", feedback_type="down")
+    fs.mark_reviewed(fid1, root_cause="retrieval_miss")
+    fs.mark_reviewed(fid2, root_cause="hallucination")
+
+    hits = fs.list_feedbacks(root_cause="retrieval_miss")
+    assert len(hits) == 1
+    assert hits[0]["question"] == "Q1"
+
+    hits2 = fs.list_feedbacks(root_cause="hallucination")
+    assert len(hits2) == 1
+    assert hits2[0]["question"] == "Q2"
+
+
+# ─── enhanced count_summary ─────────────────────────────────────────────────
+
+def test_count_summary_includes_root_cause_and_topics():
+    fs = _store()
+    fid1 = fs.add_feedback(
+        question="Q1", answer="A1", feedback_type="down", detected_topic="k8s",
+    )
+    fid2 = fs.add_feedback(
+        question="Q2", answer="A2", feedback_type="down", detected_topic="k8s",
+    )
+    fid3 = fs.add_feedback(
+        question="Q3", answer="A3", feedback_type="down", detected_topic="docker",
+    )
+    fs.mark_reviewed(fid1, root_cause="retrieval_miss")
+    fs.mark_reviewed(fid2, root_cause="retrieval_miss")
+    fs.mark_reviewed(fid3, root_cause="hallucination")
+
+    s = fs.count_summary()
+    assert s["by_root_cause"]["retrieval_miss"] == 2
+    assert s["by_root_cause"]["hallucination"] == 1
+    assert s["top_down_topics"]["k8s"] == 2
+    assert s["top_down_topics"]["docker"] == 1
+
+
+def test_count_summary_empty_has_dicts():
+    fs = _store()
+    s = fs.count_summary()
+    assert s["by_root_cause"] == {}
+    assert s["top_down_topics"] == {}

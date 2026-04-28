@@ -258,15 +258,47 @@ def render_trace(trace: dict) -> None:
             st.json(trace)
 
 
-def submit_feedback(msg_index: int, feedback_type: str, question: str, answer: str) -> None:
-    """Send feedback to backend API."""
+def _compact_citations(citations: list[dict]) -> list[dict]:
+    """Extract compact citation snapshot for feedback persistence."""
+    return [
+        {k: c.get(k) for k in ("title", "url", "score") if c.get(k) is not None}
+        for c in (citations or [])
+    ]
+
+
+def _compact_trace(trace: dict) -> dict:
+    """Extract compact trace snapshot for feedback persistence."""
+    if not trace:
+        return {}
+    keys = (
+        "request_id", "detected_topic", "retrieval_count",
+        "rewritten_query", "cache_hit", "latency_ms",
+    )
+    return {k: trace[k] for k in keys if k in trace and trace[k] is not None}
+
+
+def submit_feedback(
+    msg_index: int,
+    feedback_type: str,
+    question: str,
+    answer: str,
+    msg_data: dict | None = None,
+) -> None:
+    """Send feedback to backend API with retrieval debug snapshot."""
     try:
+        trace = (msg_data or {}).get("trace", {})
+        citations = (msg_data or {}).get("citations", [])
         payload = {
             "session_id": st.session_state.session_id,
             "message_id": str(msg_index),
             "question": question,
             "answer": answer,
             "feedback_type": feedback_type,
+            "rewritten_query": trace.get("rewritten_query"),
+            "detected_topic": trace.get("detected_topic"),
+            "retrieval_count": trace.get("retrieval_count"),
+            "citations_snapshot": _compact_citations(citations) or None,
+            "trace_snapshot": _compact_trace(trace) or None,
         }
         r = get_http_client().post(
             f"{st.session_state.api_url}/feedback",
@@ -303,7 +335,9 @@ def clear_feedback(msg_index: int) -> None:
         pass
 
 
-def render_feedback_buttons(msg_index: int, question: str, answer: str) -> None:
+def render_feedback_buttons(
+    msg_index: int, question: str, answer: str, msg_data: dict | None = None,
+) -> None:
     """Render compact inline feedback buttons with icon-only thumbs."""
     feedback_key = f"feedback-{st.session_state.session_id}-{msg_index}"
     existing = st.session_state.get(feedback_key)
@@ -332,11 +366,11 @@ def render_feedback_buttons(msg_index: int, question: str, answer: str) -> None:
         cols = st.columns([0.34, 0.34, 9.32], gap="small")
         with cols[0]:
             if st.button("👍", key=f"fb-up-{msg_index}", help="Hữu ích", type="tertiary"):
-                submit_feedback(msg_index, "up", question, answer)
+                submit_feedback(msg_index, "up", question, answer, msg_data)
                 st.rerun()
         with cols[1]:
             if st.button("👎", key=f"fb-down-{msg_index}", help="Chưa ổn", type="tertiary"):
-                submit_feedback(msg_index, "down", question, answer)
+                submit_feedback(msg_index, "down", question, answer, msg_data)
                 st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1063,7 +1097,7 @@ for idx, msg in enumerate(st.session_state.messages):
                         prev_question = st.session_state.messages[prev_idx]["content"]
                         break
                 if prev_question:
-                    render_feedback_buttons(idx, prev_question, msg["content"])
+                    render_feedback_buttons(idx, prev_question, msg["content"], msg)
 
 # Stream assistant message cho pending prompt (xuất hiện ngay sau user message ở loop trên)
 process_pending_prompt()

@@ -562,11 +562,18 @@ class FeedbackRequest(BaseModel):
     answer: str
     feedback_type: str  # 'up' | 'down'
     note: str | None = None
+    # retrieval debug snapshot (optional)
+    rewritten_query: str | None = None
+    detected_topic: str | None = None
+    retrieval_count: int | None = None
+    citations_snapshot: list[dict] | None = None
+    trace_snapshot: dict | None = None
 
 
 class ReviewRequest(BaseModel):
     review_note: str | None = None
     review_status: str = "reviewed"  # 'pending' | 'reviewed' | 'actioned'
+    root_cause: str | None = None  # retrieval_miss | insufficient_context | ...
 
 
 @router.post("/feedback")
@@ -587,6 +594,11 @@ async def submit_feedback(req: FeedbackRequest):
             session_id=req.session_id,
             message_id=req.message_id,
             note=req.note,
+            rewritten_query=req.rewritten_query,
+            detected_topic=req.detected_topic,
+            retrieval_count=req.retrieval_count,
+            citations_snapshot=req.citations_snapshot,
+            trace_snapshot=req.trace_snapshot,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -600,6 +612,7 @@ async def list_feedback(
     reviewed: bool | None = None,
     session_id: str | None = None,
     review_status: str | None = None,
+    root_cause: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -610,12 +623,15 @@ async def list_feedback(
         raise HTTPException(status_code=400, detail="feedback_type phải là 'up' hoặc 'down'.")
     if review_status and review_status not in ("pending", "reviewed", "actioned"):
         raise HTTPException(status_code=400, detail="review_status không hợp lệ.")
+    if root_cause and root_cause not in feedback_store.valid_root_causes():
+        raise HTTPException(status_code=400, detail="root_cause không hợp lệ.")
 
     items = feedback_store.list_feedbacks(
         feedback_type=feedback_type,
         reviewed=reviewed,
         session_id=session_id,
         review_status=review_status,
+        root_cause=root_cause,
         limit=limit,
         offset=offset,
     )
@@ -629,7 +645,7 @@ async def list_feedback(
 
 @router.post("/feedback/{feedback_id}/review")
 async def review_feedback(feedback_id: int, req: ReviewRequest):
-    """Mark a feedback as reviewed with optional note."""
+    """Mark a feedback as reviewed with optional note and root cause."""
     from orchestrator import feedback_store
 
     existing = feedback_store.get_feedback(feedback_id)
@@ -638,12 +654,19 @@ async def review_feedback(feedback_id: int, req: ReviewRequest):
 
     if req.review_status not in ("pending", "reviewed", "actioned"):
         raise HTTPException(status_code=400, detail="review_status không hợp lệ.")
+    if req.root_cause and req.root_cause not in feedback_store.valid_root_causes():
+        raise HTTPException(status_code=400, detail="root_cause không hợp lệ.")
 
-    updated = feedback_store.mark_reviewed(
-        feedback_id,
-        review_note=req.review_note,
-        review_status=req.review_status,
-    )
+    try:
+        updated = feedback_store.mark_reviewed(
+            feedback_id,
+            review_note=req.review_note,
+            review_status=req.review_status,
+            root_cause=req.root_cause,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return updated
 
 

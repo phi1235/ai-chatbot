@@ -218,6 +218,7 @@ def get_feedback_list(
     feedback_type: str | None = None,
     reviewed: bool | None = None,
     review_status: str | None = None,
+    root_cause: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict | None:
@@ -229,6 +230,8 @@ def get_feedback_list(
             params["reviewed"] = str(reviewed).lower()
         if review_status:
             params["review_status"] = review_status
+        if root_cause:
+            params["root_cause"] = root_cause
         r = http().get(f"{api_url()}/admin/feedback", params=params)
         r.raise_for_status()
         return r.json()
@@ -237,11 +240,16 @@ def get_feedback_list(
         return None
 
 
-def review_feedback_item(feedback_id: int, review_note: str, review_status: str) -> dict | None:
+def review_feedback_item(
+    feedback_id: int, review_note: str, review_status: str, root_cause: str | None = None,
+) -> dict | None:
     try:
+        body: dict = {"review_note": review_note, "review_status": review_status}
+        if root_cause:
+            body["root_cause"] = root_cause
         r = http().post(
             f"{api_url()}/admin/feedback/{feedback_id}/review",
-            json={"review_note": review_note, "review_status": review_status},
+            json=body,
         )
         r.raise_for_status()
         return r.json()
@@ -2214,64 +2222,120 @@ def page_coverage_gaps():
 
 
 # ─── Page: Feedback ─────────────────────────────────────────────────────────
+_ROOT_CAUSE_OPTIONS = [
+    "retrieval_miss",
+    "insufficient_context",
+    "bad_citation_fit",
+    "wrong_answer_from_context",
+    "hallucination",
+    "stale_source_mix",
+    "true_coverage_gap",
+    "other",
+]
+
+_ROOT_CAUSE_LABELS = {
+    "retrieval_miss": "Retrieval miss",
+    "insufficient_context": "Insufficient context",
+    "bad_citation_fit": "Bad citation fit",
+    "wrong_answer_from_context": "Wrong answer from context",
+    "hallucination": "Hallucination",
+    "stale_source_mix": "Stale source mix",
+    "true_coverage_gap": "True coverage gap",
+    "other": "Other",
+}
+
+
 def page_feedback():
     render_page_header(
         "Feedback Review",
-        "Xem va xu ly feedback tu nguoi dung",
+        "Review, diagnose, and classify user feedback",
     )
 
     data = get_feedback_list(limit=200)
     if not data:
-        st.info("Chua co feedback nao.")
+        st.info("No feedback yet.")
         return
 
     summary = data.get("summary", {})
     items = data.get("items", [])
 
-    # Summary metrics
+    # ─── Summary metrics ────────────────────────────────────────────────
     cols = st.columns(4)
-    cols[0].metric("Tong feedback", summary.get("total", 0))
+    cols[0].metric("Total feedback", summary.get("total", 0))
     cols[1].metric("Down (pending)", summary.get("down_pending", 0))
-    cols[2].metric("Da review", summary.get("reviewed", 0))
+    cols[2].metric("Reviewed", summary.get("reviewed", 0))
     cols[3].metric("Up / Down", f"{summary.get('total_up', 0)} / {summary.get('total_down', 0)}")
+
+    # ─── Debug summary section ──────────────────────────────────────────
+    by_root_cause = summary.get("by_root_cause", {})
+    top_down_topics = summary.get("top_down_topics", {})
+
+    if by_root_cause or top_down_topics:
+        st.markdown("&nbsp;")
+        scols = st.columns(2, gap="medium")
+        with scols[0]:
+            st.markdown('<div class="card-title">Root cause breakdown</div>', unsafe_allow_html=True)
+            if by_root_cause:
+                for rc, cnt in by_root_cause.items():
+                    label = _ROOT_CAUSE_LABELS.get(rc, rc)
+                    st.text(f"  {label}: {cnt}")
+            else:
+                st.caption("No root causes assigned yet.")
+        with scols[1]:
+            st.markdown('<div class="card-title">Top topics with downvotes</div>', unsafe_allow_html=True)
+            if top_down_topics:
+                for topic, cnt in top_down_topics.items():
+                    st.text(f"  {topic}: {cnt}")
+            else:
+                st.caption("No topic data yet.")
 
     st.markdown("&nbsp;")
 
-    # Filters
-    fcols = st.columns([1, 1, 1, 1])
+    # ─── Filters ────────────────────────────────────────────────────────
+    fcols = st.columns([1, 1, 1, 1, 1])
     with fcols[0]:
         filter_type = st.selectbox(
-            "Loai",
-            options=["Tat ca", "down", "up"],
+            "Type",
+            options=["All", "down", "up"],
             key="fb_filter_type",
             label_visibility="collapsed",
         )
     with fcols[1]:
         filter_status = st.selectbox(
-            "Trang thai",
-            options=["Tat ca", "pending", "reviewed", "actioned"],
+            "Status",
+            options=["All", "pending", "reviewed", "actioned"],
             key="fb_filter_status",
             label_visibility="collapsed",
         )
     with fcols[2]:
+        filter_root_cause = st.selectbox(
+            "Root cause",
+            options=["All"] + _ROOT_CAUSE_OPTIONS,
+            format_func=lambda x: _ROOT_CAUSE_LABELS.get(x, x) if x != "All" else "All root causes",
+            key="fb_filter_root_cause",
+            label_visibility="collapsed",
+        )
+    with fcols[3]:
         filter_limit = st.selectbox(
-            "So luong",
+            "Count",
             options=[20, 50, 100],
             index=1,
             key="fb_filter_limit",
             label_visibility="collapsed",
         )
-    with fcols[3]:
-        if st.button("Lam moi", use_container_width=True):
+    with fcols[4]:
+        if st.button("Refresh", use_container_width=True):
             st.rerun()
 
     # Re-fetch with filters
-    ft = filter_type if filter_type != "Tat ca" else None
-    fs = filter_status if filter_status != "Tat ca" else None
-    if ft or fs or filter_limit != 50:
+    ft = filter_type if filter_type != "All" else None
+    fs = filter_status if filter_status != "All" else None
+    frc = filter_root_cause if filter_root_cause != "All" else None
+    if ft or fs or frc or filter_limit != 50:
         data = get_feedback_list(
             feedback_type=ft,
             review_status=fs,
+            root_cause=frc,
             limit=filter_limit,
         )
         if not data:
@@ -2279,69 +2343,129 @@ def page_feedback():
         items = data.get("items", [])
 
     if not items:
-        st.info("Khong co feedback nao phu hop bo loc.")
+        st.info("No feedback matches the current filters.")
         return
 
-    st.caption(f"Hien thi {len(items)} feedback")
+    st.caption(f"Showing {len(items)} feedback items")
 
-    # Render feedback list
+    # ─── Render feedback list ───────────────────────────────────────────
     for item in items:
         fb_id = item["id"]
         fb_type = item["feedback_type"]
         status = item["review_status"]
         created = datetime.fromtimestamp(item["created_at"]).strftime("%d/%m %H:%M")
+        root_cause_val = item.get("root_cause") or ""
 
         type_badge = "DOWN" if fb_type == "down" else "UP"
         type_color = "var(--danger)" if fb_type == "down" else "var(--ok)"
-        status_badge = status.upper()
+
+        badge_parts = [
+            f'<span style="font-weight:600; font-size:0.75rem; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{type_color}15; color:{type_color}">{type_badge}</span>',
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{status.upper()}</span>',
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{created}</span>',
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">#{fb_id}</span>',
+        ]
+        if root_cause_val:
+            rc_label = _ROOT_CAUSE_LABELS.get(root_cause_val, root_cause_val)
+            badge_parts.append(
+                f'<span style="font-size:0.72rem; padding:0.1rem 0.4rem; border-radius:4px; '
+                f'background:var(--accent-soft); color:var(--accent)">{rc_label}</span>'
+            )
 
         header_html = (
-            f'<div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.3rem;">'
-            f'<span style="font-weight:600; font-size:0.75rem; padding:0.1rem 0.5rem; '
-            f'border-radius:4px; background:{type_color}15; color:{type_color}">{type_badge}</span>'
-            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{status_badge}</span>'
-            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{created}</span>'
-            f'<span style="font-size:0.75rem; color:var(--text-subtle)">#{fb_id}</span>'
-            f'</div>'
+            '<div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.3rem;">'
+            + "".join(badge_parts)
+            + '</div>'
         )
 
-        with st.expander(f"{'[DOWN]' if fb_type == 'down' else '[UP]'} {item['question'][:80]}"):
+        # Expander label
+        topic_hint = f" [{item.get('detected_topic')}]" if item.get("detected_topic") else ""
+        expander_label = f"{'[DOWN]' if fb_type == 'down' else '[UP]'}{topic_hint} {item['question'][:80]}"
+
+        with st.expander(expander_label):
             st.markdown(header_html, unsafe_allow_html=True)
 
-            st.markdown("**Cau hoi:**")
+            st.markdown("**Question:**")
             st.text(item["question"])
 
-            st.markdown("**Cau tra loi:**")
+            st.markdown("**Answer:**")
             st.text(item["answer"][:500] + ("..." if len(item["answer"]) > 500 else ""))
 
             if item.get("note"):
-                st.markdown(f"**Note nguoi dung:** {item['note']}")
+                st.markdown(f"**User note:** {item['note']}")
 
+            # ── Debug context ───────────────────────────────────────────
+            detail_parts: list[str] = []
             if item.get("session_id"):
-                st.caption(f"Session: {item['session_id'][:8]}")
+                detail_parts.append(f"Session: {item['session_id'][:12]}")
+            if item.get("rewritten_query"):
+                detail_parts.append(f"Rewritten query: {item['rewritten_query']}")
+            if item.get("detected_topic"):
+                detail_parts.append(f"Topic: {item['detected_topic']}")
+            if item.get("retrieval_count") is not None:
+                detail_parts.append(f"Retrieval count: {item['retrieval_count']}")
 
+            if detail_parts:
+                st.markdown("**Debug context:**")
+                for dp in detail_parts:
+                    st.text(f"  {dp}")
+
+            # Citations snapshot
+            cit_snap = item.get("citations_snapshot") or []
+            if cit_snap:
+                with st.expander("Citations snapshot", expanded=False):
+                    for ci, cit in enumerate(cit_snap, 1):
+                        title = cit.get("title", "Untitled")
+                        url = cit.get("url", "")
+                        score = cit.get("score")
+                        score_str = f" (score: {score})" if score else ""
+                        if url:
+                            st.markdown(f"{ci}. [{title}]({url}){score_str}")
+                        else:
+                            st.markdown(f"{ci}. {title}{score_str}")
+
+            # Trace snapshot
+            trace_snap = item.get("trace_snapshot") or {}
+            if trace_snap:
+                with st.expander("Trace snapshot", expanded=False):
+                    st.json(trace_snap)
+
+            # ── Review state / form ─────────────────────────────────────
             if item["reviewed"]:
-                st.success(
-                    f"Da review ({item['review_status']})"
-                    + (f" — {item['review_note']}" if item.get("review_note") else "")
-                )
+                review_line = f"Reviewed ({item['review_status']})"
+                if root_cause_val:
+                    review_line += f" — {_ROOT_CAUSE_LABELS.get(root_cause_val, root_cause_val)}"
+                if item.get("review_note"):
+                    review_line += f" — {item['review_note']}"
+                st.success(review_line)
             else:
-                # Review form
                 with st.form(key=f"review-form-{fb_id}"):
-                    note_input = st.text_input(
-                        "Review note",
-                        placeholder="Ghi chu ngan (optional)",
-                        key=f"review-note-{fb_id}",
-                    )
-                    status_input = st.selectbox(
-                        "Status",
-                        options=["reviewed", "actioned"],
-                        key=f"review-status-{fb_id}",
-                    )
-                    if st.form_submit_button("Danh dau da review", type="primary"):
-                        result = review_feedback_item(fb_id, note_input, status_input)
+                    rcols = st.columns([2, 1, 1])
+                    with rcols[0]:
+                        note_input = st.text_input(
+                            "Review note",
+                            placeholder="Short note (optional)",
+                            key=f"review-note-{fb_id}",
+                        )
+                    with rcols[1]:
+                        status_input = st.selectbox(
+                            "Status",
+                            options=["reviewed", "actioned"],
+                            key=f"review-status-{fb_id}",
+                        )
+                    with rcols[2]:
+                        rc_input = st.selectbox(
+                            "Root cause",
+                            options=["(none)"] + _ROOT_CAUSE_OPTIONS,
+                            format_func=lambda x: _ROOT_CAUSE_LABELS.get(x, x) if x != "(none)" else "-- select --",
+                            key=f"review-rc-{fb_id}",
+                        )
+                    if st.form_submit_button("Mark reviewed", type="primary"):
+                        rc_val = rc_input if rc_input != "(none)" else None
+                        result = review_feedback_item(fb_id, note_input, status_input, rc_val)
                         if result:
-                            st.success("Da cap nhat!")
+                            st.success("Updated!")
                             st.rerun()
 
 
