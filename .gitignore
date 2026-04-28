@@ -26,6 +26,9 @@ data/clean/
 .codex
 .devin/
 
+# local handoff / scratch prompts
+.devin-*.txt
+
 # IDE
 .vscode/
 .idea/

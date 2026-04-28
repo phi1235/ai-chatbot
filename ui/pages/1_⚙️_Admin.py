@@ -250,6 +250,52 @@ def review_feedback_item(feedback_id: int, review_note: str, review_status: str)
         return None
 
 
+def get_coverage_gaps(
+    status: str | None = None,
+    detected_topic: str | None = None,
+    resolution: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if detected_topic:
+            params["detected_topic"] = detected_topic
+        if resolution:
+            params["resolution"] = resolution
+        r = http().get(f"{api_url()}/admin/coverage-gaps", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được coverage gaps: {exc}")
+        return None
+
+
+def review_coverage_gap(gap_id: int, status: str, resolution: str | None, review_note: str) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/coverage-gaps/{gap_id}/review",
+            json={"status": status, "resolution": resolution, "review_note": review_note},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Review thất bại: {exc}")
+        return None
+
+
+def get_coverage_gaps_summary() -> dict | None:
+    try:
+        r = http().get(f"{api_url()}/admin/coverage-gaps/summary")
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Không lấy được summary: {exc}")
+        return None
+
+
 def check_backend() -> bool:
     try:
         r = http().get(f"{api_url()}/health", timeout=2.0)
@@ -611,6 +657,7 @@ with st.sidebar:
             "Sources",
             "Health Check",
             "Freshness Center",
+            "Coverage Gaps",
             "Feedback",
             "Sessions",
             "Maintenance",
@@ -1595,6 +1642,205 @@ def page_maintenance():
     )
 
 
+# ─── Page: Coverage Gaps ─────────────────────────────────────────────────────
+def page_coverage_gaps():
+    render_page_header(
+        "Coverage Gaps",
+        "Phát hiện lỗ hổng knowledge base từ traffic chat",
+    )
+
+    data = get_coverage_gaps(limit=200)
+    if not data:
+        st.info("Chưa có coverage gap nào.")
+        return
+
+    summary = data.get("summary", {})
+    items = data.get("items", [])
+
+    # Summary metrics
+    cols = st.columns(5)
+    cols[0].metric("Tổng gaps", summary.get("total", 0))
+    cols[1].metric("New", summary.get("total_new", 0))
+    cols[2].metric("Reviewed", summary.get("total_reviewed", 0))
+    cols[3].metric("Actioned", summary.get("total_actioned", 0))
+    cols[4].metric("Ignored", summary.get("total_ignored", 0))
+
+    # Topic breakdown
+    by_topic = summary.get("by_topic", {})
+    by_resolution = summary.get("by_resolution", {})
+    if by_topic or by_resolution:
+        st.markdown("&nbsp;")
+        bcols = st.columns(2, gap="medium")
+        with bcols[0]:
+            if by_topic:
+                st.markdown('<div class="card-title">Theo topic</div>', unsafe_allow_html=True)
+                for topic, cnt in by_topic.items():
+                    st.text(f"  {topic}: {cnt}")
+        with bcols[1]:
+            if by_resolution:
+                st.markdown('<div class="card-title">Theo resolution</div>', unsafe_allow_html=True)
+                for res, cnt in by_resolution.items():
+                    st.text(f"  {res}: {cnt}")
+
+    st.markdown("&nbsp;")
+
+    # Filters
+    fcols = st.columns([1, 1, 1, 1, 1])
+    with fcols[0]:
+        filter_status = st.selectbox(
+            "Status",
+            options=["Tất cả", "new", "reviewed", "actioned", "ignored"],
+            key="cg_filter_status",
+            label_visibility="collapsed",
+        )
+    with fcols[1]:
+        # Collect available topics from items
+        all_topics = sorted({it.get("detected_topic") or "" for it in items} - {""})
+        topic_options = ["Tất cả"] + all_topics
+        filter_topic = st.selectbox(
+            "Topic",
+            options=topic_options,
+            key="cg_filter_topic",
+            label_visibility="collapsed",
+        )
+    with fcols[2]:
+        resolution_options = [
+            "Tất cả", "add_source", "recrawl", "out_of_scope",
+            "duplicate", "retrieval_tuning", "prompt_tuning",
+        ]
+        filter_resolution = st.selectbox(
+            "Resolution",
+            options=resolution_options,
+            key="cg_filter_resolution",
+            label_visibility="collapsed",
+        )
+    with fcols[3]:
+        filter_limit = st.selectbox(
+            "Số lượng",
+            options=[20, 50, 100],
+            index=1,
+            key="cg_filter_limit",
+            label_visibility="collapsed",
+        )
+    with fcols[4]:
+        if st.button("Làm mới", use_container_width=True, key="cg_refresh"):
+            st.rerun()
+
+    # Re-fetch with filters
+    ft_status = filter_status if filter_status != "Tất cả" else None
+    ft_topic = filter_topic if filter_topic != "Tất cả" else None
+    ft_res = filter_resolution if filter_resolution != "Tất cả" else None
+    if ft_status or ft_topic or ft_res or filter_limit != 50:
+        data = get_coverage_gaps(
+            status=ft_status,
+            detected_topic=ft_topic,
+            resolution=ft_res,
+            limit=filter_limit,
+        )
+        if not data:
+            return
+        items = data.get("items", [])
+
+    if not items:
+        st.info("Không có coverage gap nào phù hợp bộ lọc.")
+        return
+
+    st.caption(f"Hiển thị {len(items)} gaps")
+
+    # Render gap list
+    for item in items:
+        gap_id = item["id"]
+        gap_status = item["status"]
+        created = datetime.fromtimestamp(item["created_at"]).strftime("%d/%m %H:%M")
+        signals = item.get("gap_signals", [])
+        signals_text = ", ".join(signals) if signals else "-"
+        topic_text = item.get("detected_topic") or "-"
+
+        status_color = {
+            "new": "var(--warn)",
+            "reviewed": "var(--accent)",
+            "actioned": "var(--ok)",
+            "ignored": "var(--text-subtle)",
+        }.get(gap_status, "var(--text-muted)")
+
+        header_html = (
+            f'<div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.3rem;">'
+            f'<span style="font-weight:600; font-size:0.75rem; padding:0.1rem 0.5rem; '
+            f'border-radius:4px; background:{status_color}15; color:{status_color}">'
+            f'{gap_status.upper()}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">[{topic_text}]</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">ret={item["retrieval_count"]}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">{created}</span>'
+            f'<span style="font-size:0.75rem; color:var(--text-subtle)">#{gap_id}</span>'
+            f'</div>'
+        )
+
+        expander_label = f"[{gap_status.upper()}] {item['question'][:80]}"
+        with st.expander(expander_label):
+            st.markdown(header_html, unsafe_allow_html=True)
+
+            st.markdown("**Câu hỏi:**")
+            st.text(item["question"])
+
+            if item.get("rewritten_query"):
+                st.markdown(f"**Query rewritten:** {item['rewritten_query']}")
+
+            st.markdown(f"**Signals:** {signals_text}")
+            st.markdown(f"**Retrieval count:** {item['retrieval_count']}")
+
+            if item.get("answer_excerpt"):
+                st.markdown("**Answer excerpt:**")
+                st.text(item["answer_excerpt"][:300] + ("..." if len(item["answer_excerpt"]) > 300 else ""))
+
+            citations = item.get("citations_snapshot", [])
+            if citations:
+                st.markdown("**Citations:**")
+                for c in citations[:5]:
+                    score_text = f" (score: {c['score']:.2f})" if c.get("score") is not None else ""
+                    st.text(f"  - {c.get('title', '-')}{score_text}")
+
+            if item.get("session_id"):
+                st.caption(f"Session: {item['session_id'][:8]}")
+
+            if item.get("resolution"):
+                st.success(
+                    f"Resolution: {item['resolution']}"
+                    + (f" — {item['review_note']}" if item.get("review_note") else "")
+                )
+
+            if gap_status == "new":
+                with st.form(key=f"cg-review-form-{gap_id}"):
+                    note_input = st.text_input(
+                        "Review note",
+                        placeholder="Ghi chú ngắn (optional)",
+                        key=f"cg-note-{gap_id}",
+                    )
+                    rcols = st.columns(2)
+                    with rcols[0]:
+                        status_input = st.selectbox(
+                            "Status",
+                            options=["reviewed", "actioned", "ignored"],
+                            key=f"cg-status-{gap_id}",
+                        )
+                    with rcols[1]:
+                        resolution_input = st.selectbox(
+                            "Resolution",
+                            options=[
+                                "(none)", "add_source", "recrawl", "out_of_scope",
+                                "duplicate", "retrieval_tuning", "prompt_tuning",
+                            ],
+                            key=f"cg-resolution-{gap_id}",
+                        )
+                    if st.form_submit_button("Đánh dấu", type="primary"):
+                        res_value = resolution_input if resolution_input != "(none)" else None
+                        result = review_coverage_gap(gap_id, status_input, res_value, note_input)
+                        if result:
+                            st.success("Đã cập nhật!")
+                            st.rerun()
+            elif item.get("review_note"):
+                st.info(f"Note: {item['review_note']}")
+
+
 # ─── Page: Feedback ─────────────────────────────────────────────────────────
 def page_feedback():
     render_page_header(
@@ -1733,6 +1979,7 @@ PAGE_RENDERERS = {
     "Sources": page_sources,
     "Health Check": page_health,
     "Freshness Center": page_freshness_center,
+    "Coverage Gaps": page_coverage_gaps,
     "Feedback": page_feedback,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,

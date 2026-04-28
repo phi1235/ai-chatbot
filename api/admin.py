@@ -576,3 +576,69 @@ async def feedback_summary():
     """Quick summary counts for feedback dashboard."""
     from orchestrator import feedback_store
     return feedback_store.count_summary()
+
+
+# ─── Coverage Gaps ───────────────────────────────────────────────────────────
+class CoverageGapReviewRequest(BaseModel):
+    status: str = "reviewed"  # new | reviewed | actioned | ignored
+    resolution: str | None = None  # add_source | recrawl | out_of_scope | ...
+    review_note: str | None = None
+
+
+@router.get("/coverage-gaps")
+async def list_coverage_gaps(
+    status: str | None = None,
+    detected_topic: str | None = None,
+    resolution: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List coverage gap candidates with optional filters."""
+    from orchestrator import coverage_gap_store
+
+    valid_statuses = {"new", "reviewed", "actioned", "ignored"}
+    if status and status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="status không hợp lệ.")
+
+    items = coverage_gap_store.list_gaps(
+        status=status,
+        detected_topic=detected_topic,
+        resolution=resolution,
+        limit=limit,
+        offset=offset,
+    )
+    summary = coverage_gap_store.count_summary()
+    return {
+        "count": len(items),
+        "summary": summary,
+        "items": items,
+    }
+
+
+@router.post("/coverage-gaps/{gap_id}/review")
+async def review_coverage_gap(gap_id: int, req: CoverageGapReviewRequest):
+    """Mark a coverage gap as reviewed with optional resolution and note."""
+    from orchestrator import coverage_gap_store
+
+    existing = coverage_gap_store.get_gap(gap_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Coverage gap không tồn tại.")
+
+    try:
+        updated = coverage_gap_store.review_gap(
+            gap_id,
+            status=req.status,
+            resolution=req.resolution,
+            review_note=req.review_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return updated
+
+
+@router.get("/coverage-gaps/summary")
+async def coverage_gaps_summary():
+    """Quick summary counts for coverage gaps dashboard."""
+    from orchestrator import coverage_gap_store
+    return coverage_gap_store.count_summary()

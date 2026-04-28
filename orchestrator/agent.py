@@ -55,6 +55,37 @@ def _persist_assistant(
     )
 
 
+def _check_coverage_gap(
+    *,
+    question: str,
+    answer: str,
+    retrieval_count: int,
+    citations: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    message_id: str | None = None,
+    rewritten_query: str | None = None,
+    detected_topic: str | None = None,
+) -> None:
+    """Run coverage gap detector. Silently swallows exceptions to never block chat."""
+    try:
+        from orchestrator.coverage_gap_detector import maybe_persist_gap
+
+        gap_id = maybe_persist_gap(
+            question=question,
+            answer=answer,
+            retrieval_count=retrieval_count,
+            citations=citations,
+            session_id=session_id,
+            message_id=message_id,
+            rewritten_query=rewritten_query,
+            detected_topic=detected_topic,
+        )
+        if gap_id:
+            logger.debug("coverage gap persisted", extra={"gap_id": gap_id})
+    except Exception:
+        logger.debug("coverage gap detection failed", exc_info=True)
+
+
 def handle_chat(request: ChatRequest) -> ChatResponse:
     request_id = str(uuid.uuid4())
     set_request_id(request_id)
@@ -199,6 +230,18 @@ def handle_chat(request: ChatRequest) -> ChatResponse:
         show_citations=rag_result.show_citations,
         trace=trace_info.model_dump(),
     )
+
+    # Coverage gap detection (fire-and-forget, never blocks response)
+    _check_coverage_gap(
+        question=input_check.text,
+        answer=answer,
+        retrieval_count=rag_result.retrieval_count,
+        citations=[c.model_dump() for c in rag_result.citations],
+        session_id=session_id,
+        rewritten_query=standalone_query if did_rewrite else None,
+        detected_topic=rag_result.detected_topic,
+    )
+
     return ChatResponse(
         answer=answer,
         citations=rag_result.citations,
@@ -412,6 +455,17 @@ def handle_chat_stream(request: ChatRequest) -> Iterator[dict[str, Any]]:
         show_citations=setup.show_citations,
         trace=trace_dict,
         is_error="garbage_output" in safety_flags,
+    )
+
+    # Coverage gap detection (fire-and-forget, never blocks response)
+    _check_coverage_gap(
+        question=input_check.text,
+        answer=final_answer,
+        retrieval_count=len(setup.chunks),
+        citations=[c.model_dump() for c in setup.citations],
+        session_id=session_id,
+        rewritten_query=standalone_query if did_rewrite else None,
+        detected_topic=setup.detected_topic,
     )
 
     yield {
