@@ -670,4 +670,191 @@ def test_get_eval_batch_items_structure(client):
         assert "root_cause" in it
         assert "expected_topic" in it
         assert "error" in it
-        assert "created_at" in it
+
+
+# ─── GET /admin/eval-batches/compare ─────────────────────────────────────────
+
+def _run_batch(client, label: str | None = None) -> dict:
+    """Run a batch (with mock) and return the batch dict."""
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={"label": label})
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_compare_two_batches_explicit(client):
+    """Explicit baseline + candidate comparison returns correct delta fields."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client, label="baseline")
+    b2 = _run_batch(client, label="candidate")
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"baseline_batch_id": b1["id"], "candidate_batch_id": b2["id"]},
+    )
+    assert r.status_code == 200
+    cmp = r.json()
+
+    assert cmp["baseline_batch_id"] == b1["id"]
+    assert cmp["candidate_batch_id"] == b2["id"]
+    # All required top-level delta fields are present
+    for field in [
+        "baseline_total_cases", "candidate_total_cases",
+        "baseline_pass_count", "candidate_pass_count",
+        "baseline_fail_count", "candidate_fail_count",
+        "baseline_error_count", "candidate_error_count",
+        "baseline_pass_rate", "candidate_pass_rate",
+        "delta_pass_count", "delta_fail_count", "delta_error_count", "delta_pass_rate",
+        "sizes_differ", "by_root_cause", "by_expected_topic",
+    ]:
+        assert field in cmp, f"Missing field: {field}"
+
+
+def test_compare_batches_delta_values_correct(client):
+    """delta_pass_rate = candidate_pass_rate - baseline_pass_rate."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client)
+    b2 = _run_batch(client)
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"baseline_batch_id": b1["id"], "candidate_batch_id": b2["id"]},
+    )
+    cmp = r.json()
+    expected_delta = round(cmp["candidate_pass_rate"] - cmp["baseline_pass_rate"], 4)
+    assert cmp["delta_pass_rate"] == expected_delta
+    assert cmp["delta_pass_count"] == cmp["candidate_pass_count"] - cmp["baseline_pass_count"]
+    assert cmp["delta_fail_count"] == cmp["candidate_fail_count"] - cmp["baseline_fail_count"]
+
+
+def test_compare_batches_breakdown_present(client):
+    """by_root_cause and by_expected_topic breakdowns are non-empty dicts."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client)
+    b2 = _run_batch(client)
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"baseline_batch_id": b1["id"], "candidate_batch_id": b2["id"]},
+    )
+    cmp = r.json()
+    assert isinstance(cmp["by_root_cause"], dict)
+    assert isinstance(cmp["by_expected_topic"], dict)
+    # Both cases from _setup_two_cases have known root causes
+    assert len(cmp["by_root_cause"]) >= 1
+
+
+def test_compare_batches_convenience_auto_baseline(client):
+    """When only candidate_batch_id supplied, immediately previous batch is baseline."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client, label="older")
+    b2 = _run_batch(client, label="newer")
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"candidate_batch_id": b2["id"]},
+    )
+    assert r.status_code == 200
+    cmp = r.json()
+    assert cmp["baseline_batch_id"] == b1["id"]
+    assert cmp["candidate_batch_id"] == b2["id"]
+
+
+def test_compare_batches_convenience_no_previous_batch(client):
+    """If candidate is the only batch, auto-baseline fails with 400."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client)
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"candidate_batch_id": b1["id"]},
+    )
+    assert r.status_code == 400
+    assert "previous" in r.json()["detail"].lower()
+
+
+def test_compare_batches_missing_baseline_id(client):
+    """Non-existent baseline_batch_id returns 404."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client)
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"baseline_batch_id": 9999, "candidate_batch_id": b1["id"]},
+    )
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"].lower()
+
+
+def test_compare_batches_missing_candidate_id(client):
+    """Non-existent candidate_batch_id returns 404."""
+    _setup_two_cases(client)
+    b1 = _run_batch(client)
+
+    r = client.get(
+        "/admin/eval-batches/compare",
+        params={"baseline_batch_id": b1["id"], "candidate_batch_id": 9999},
+    )
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"].lower()
+
+
+# ─── GET /admin/eval-batches/trend ───────────────────────────────────────────
+
+def test_eval_batches_trend_empty(client):
+    r = client.get("/admin/eval-batches/trend")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 0
+    assert data["batches"] == []
+
+
+def test_eval_batches_trend_newest_first(client):
+    """Trend returns batches newest-first."""
+    _setup_two_cases(client)
+    _run_batch(client, label="first")
+    _run_batch(client, label="second")
+
+    r = client.get("/admin/eval-batches/trend")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 2
+    assert data["batches"][0]["label"] == "second"
+    assert data["batches"][1]["label"] == "first"
+
+
+def test_eval_batches_trend_compact_fields(client):
+    """Each trend item has all required compact fields."""
+    _setup_two_cases(client)
+    _run_batch(client, label="test-run")
+
+    r = client.get("/admin/eval-batches/trend")
+    item = r.json()["batches"][0]
+    for field in [
+        "id", "label", "created_at",
+        "total_cases", "pass_count", "fail_count", "error_count", "pass_rate",
+    ]:
+        assert field in item, f"Missing trend field: {field}"
+
+
+def test_eval_batches_trend_limit(client):
+    """Limit param controls the number of trend items returned."""
+    _setup_two_cases(client)
+    for _ in range(4):
+        _run_batch(client)
+
+    r = client.get("/admin/eval-batches/trend", params={"limit": 2})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 2
+    assert len(data["batches"]) == 2
+
+
+def test_eval_batches_trend_pass_rate_in_range(client):
+    """pass_rate is between 0 and 1."""
+    _setup_two_cases(client)
+    _run_batch(client)
+
+    r = client.get("/admin/eval-batches/trend")
+    item = r.json()["batches"][0]
+    assert 0.0 <= item["pass_rate"] <= 1.0

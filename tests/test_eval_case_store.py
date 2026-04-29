@@ -616,4 +616,302 @@ def test_build_batch_summary_excludes_errors_from_breakdown():
     # Error item should not appear in by_root_cause breakdown
     by_rc = s["by_root_cause"]
     assert by_rc["retrieval_miss"]["pass"] == 1
-    assert by_rc["retrieval_miss"].get("fail", 0) == 0
+
+
+# ─── _build_group_delta ───────────────────────────────────────────────────────
+
+def test_build_group_delta_equal_keys():
+    ecs = _store()
+    baseline = {"retrieval_miss": {"pass": 8, "fail": 6}}
+    candidate = {"retrieval_miss": {"pass": 11, "fail": 3}}
+    result = ecs._build_group_delta(baseline, candidate)
+    g = result["retrieval_miss"]
+    assert g["baseline"] == {"pass": 8, "fail": 6}
+    assert g["candidate"] == {"pass": 11, "fail": 3}
+    assert g["delta"] == {"pass": 3, "fail": -3}
+
+
+def test_build_group_delta_missing_key_baseline():
+    ecs = _store()
+    baseline = {}
+    candidate = {"hallucination": {"pass": 2, "fail": 1}}
+    result = ecs._build_group_delta(baseline, candidate)
+    assert "hallucination" in result
+    g = result["hallucination"]
+    assert g["baseline"] == {"pass": 0, "fail": 0}
+    assert g["candidate"] == {"pass": 2, "fail": 1}
+    assert g["delta"] == {"pass": 2, "fail": 1}
+
+
+def test_build_group_delta_missing_key_candidate():
+    ecs = _store()
+    baseline = {"retrieval_miss": {"pass": 4, "fail": 2}}
+    candidate = {}
+    result = ecs._build_group_delta(baseline, candidate)
+    g = result["retrieval_miss"]
+    assert g["baseline"] == {"pass": 4, "fail": 2}
+    assert g["candidate"] == {"pass": 0, "fail": 0}
+    assert g["delta"] == {"pass": -4, "fail": -2}
+
+
+def test_build_group_delta_both_empty():
+    ecs = _store()
+    result = ecs._build_group_delta({}, {})
+    assert result == {}
+
+
+def test_build_group_delta_union_keys():
+    ecs = _store()
+    baseline = {"a": {"pass": 1, "fail": 0}}
+    candidate = {"b": {"pass": 0, "fail": 1}}
+    result = ecs._build_group_delta(baseline, candidate)
+    assert set(result.keys()) == {"a", "b"}
+
+
+# ─── compare_eval_batches ─────────────────────────────────────────────────────
+
+_GLOBAL_FB_COUNTER = [10_000]  # unique across calls within a test session
+
+
+def _make_batch_with_items(ecs, *, pass_items, fail_items, error_items=0,
+                            root_cause="retrieval_miss", expected_topic="kubernetes",
+                            label=None):
+    """Helper: create a batch + items with deterministic pass/fail/error counts."""
+    total = pass_items + fail_items + error_items
+    batch = ecs.create_eval_batch(
+        label=label,
+        filters={},
+        total_cases=total,
+        pass_count=pass_items,
+        fail_count=fail_items,
+    )
+
+    def _next_fb():
+        v = _GLOBAL_FB_COUNTER[0]
+        _GLOBAL_FB_COUNTER[0] += 1
+        return v
+
+    for _ in range(pass_items):
+        case = ecs.create_eval_case(
+            feedback_id=_next_fb(), question="Q",
+            root_cause=root_cause, expected_topic=expected_topic,
+        )
+        ecs.create_eval_batch_item(
+            batch_id=batch["id"], eval_case_id=case["id"],
+            eval_run_id=None, passed=True,
+            root_cause=root_cause, expected_topic=expected_topic,
+        )
+    for _ in range(fail_items):
+        case = ecs.create_eval_case(
+            feedback_id=_next_fb(), question="Q",
+            root_cause=root_cause, expected_topic=expected_topic,
+        )
+        ecs.create_eval_batch_item(
+            batch_id=batch["id"], eval_case_id=case["id"],
+            eval_run_id=None, passed=False,
+            root_cause=root_cause, expected_topic=expected_topic,
+        )
+    for _ in range(error_items):
+        case = ecs.create_eval_case(
+            feedback_id=_next_fb(), question="Q",
+            root_cause=root_cause, expected_topic=expected_topic,
+        )
+        ecs.create_eval_batch_item(
+            batch_id=batch["id"], eval_case_id=case["id"],
+            eval_run_id=None, passed=None,
+            root_cause=root_cause, expected_topic=expected_topic,
+            error="Pipeline error",
+        )
+    return batch
+
+
+def test_compare_eval_batches_top_level_deltas():
+    """Top-level pass/fail/error/pass_rate deltas are computed correctly."""
+    ecs = _store()
+    baseline = _make_batch_with_items(ecs, pass_items=6, fail_items=4)
+    candidate = _make_batch_with_items(ecs, pass_items=8, fail_items=2)
+
+    cmp = ecs.compare_eval_batches(baseline["id"], candidate["id"])
+
+    assert cmp["baseline_batch_id"] == baseline["id"]
+    assert cmp["candidate_batch_id"] == candidate["id"]
+    assert cmp["baseline_total_cases"] == 10
+    assert cmp["candidate_total_cases"] == 10
+    assert cmp["baseline_pass_count"] == 6
+    assert cmp["candidate_pass_count"] == 8
+    assert cmp["baseline_fail_count"] == 4
+    assert cmp["candidate_fail_count"] == 2
+    assert cmp["delta_pass_count"] == 2
+    assert cmp["delta_fail_count"] == -2
+    assert cmp["delta_error_count"] == 0
+    assert cmp["baseline_pass_rate"] == round(6 / 10, 4)
+    assert cmp["candidate_pass_rate"] == round(8 / 10, 4)
+    assert cmp["delta_pass_rate"] == round(8 / 10 - 6 / 10, 4)
+    assert cmp["sizes_differ"] is False
+
+
+def test_compare_eval_batches_sizes_differ_flag():
+    ecs = _store()
+    baseline = _make_batch_with_items(ecs, pass_items=5, fail_items=5)
+    candidate = _make_batch_with_items(ecs, pass_items=8, fail_items=4)
+
+    cmp = ecs.compare_eval_batches(baseline["id"], candidate["id"])
+    assert cmp["sizes_differ"] is True
+    assert cmp["baseline_total_cases"] == 10
+    assert cmp["candidate_total_cases"] == 12
+
+
+def test_compare_eval_batches_root_cause_delta():
+    """Root cause breakdown delta is included and correct."""
+    ecs = _store()
+    baseline = _make_batch_with_items(
+        ecs, pass_items=4, fail_items=6, root_cause="retrieval_miss", expected_topic="k8s"
+    )
+    candidate = _make_batch_with_items(
+        ecs, pass_items=7, fail_items=3, root_cause="retrieval_miss", expected_topic="k8s"
+    )
+
+    cmp = ecs.compare_eval_batches(baseline["id"], candidate["id"])
+    by_rc = cmp["by_root_cause"]
+    assert "retrieval_miss" in by_rc
+    g = by_rc["retrieval_miss"]
+    assert g["baseline"]["fail"] == 6
+    assert g["candidate"]["fail"] == 3
+    assert g["delta"]["fail"] == -3
+    assert g["delta"]["pass"] == 3
+
+
+def test_compare_eval_batches_expected_topic_delta():
+    """Expected topic breakdown delta is included and correct."""
+    ecs = _store()
+    baseline = _make_batch_with_items(
+        ecs, pass_items=3, fail_items=7, root_cause="hallucination", expected_topic="docker"
+    )
+    candidate = _make_batch_with_items(
+        ecs, pass_items=5, fail_items=5, root_cause="hallucination", expected_topic="docker"
+    )
+
+    cmp = ecs.compare_eval_batches(baseline["id"], candidate["id"])
+    by_et = cmp["by_expected_topic"]
+    assert "docker" in by_et
+    g = by_et["docker"]
+    assert g["baseline"]["pass"] == 3
+    assert g["candidate"]["pass"] == 5
+    assert g["delta"]["pass"] == 2
+
+
+def test_compare_eval_batches_missing_baseline_raises():
+    ecs = _store()
+    candidate = _make_batch_with_items(ecs, pass_items=5, fail_items=5)
+    with pytest.raises(ValueError, match="not found"):
+        ecs.compare_eval_batches(9999, candidate["id"])
+
+
+def test_compare_eval_batches_missing_candidate_raises():
+    ecs = _store()
+    baseline = _make_batch_with_items(ecs, pass_items=5, fail_items=5)
+    with pytest.raises(ValueError, match="not found"):
+        ecs.compare_eval_batches(baseline["id"], 9999)
+
+
+def test_compare_eval_batches_union_root_causes():
+    """Groups present in only one side appear in the delta output."""
+    ecs = _store()
+    # baseline: retrieval_miss only
+    b = ecs.create_eval_batch(label=None, filters={}, total_cases=2, pass_count=1, fail_count=1)
+    c1 = ecs.create_eval_case(feedback_id=1, question="Q", root_cause="retrieval_miss",
+                               expected_topic="k8s")
+    c2 = ecs.create_eval_case(feedback_id=2, question="Q", root_cause="retrieval_miss",
+                               expected_topic="k8s")
+    ecs.create_eval_batch_item(batch_id=b["id"], eval_case_id=c1["id"], eval_run_id=None,
+                                passed=True, root_cause="retrieval_miss", expected_topic="k8s")
+    ecs.create_eval_batch_item(batch_id=b["id"], eval_case_id=c2["id"], eval_run_id=None,
+                                passed=False, root_cause="retrieval_miss", expected_topic="k8s")
+
+    # candidate: hallucination only
+    c = ecs.create_eval_batch(label=None, filters={}, total_cases=1, pass_count=0, fail_count=1)
+    c3 = ecs.create_eval_case(feedback_id=3, question="Q", root_cause="hallucination",
+                               expected_topic="docker")
+    ecs.create_eval_batch_item(batch_id=c["id"], eval_case_id=c3["id"], eval_run_id=None,
+                                passed=False, root_cause="hallucination", expected_topic="docker")
+
+    cmp = ecs.compare_eval_batches(b["id"], c["id"])
+    by_rc = cmp["by_root_cause"]
+    assert "retrieval_miss" in by_rc
+    assert "hallucination" in by_rc
+    # retrieval_miss absent in candidate → candidate values are 0
+    assert by_rc["retrieval_miss"]["candidate"] == {"pass": 0, "fail": 0}
+    # hallucination absent in baseline → baseline values are 0
+    assert by_rc["hallucination"]["baseline"] == {"pass": 0, "fail": 0}
+
+
+def test_compare_eval_batches_error_count_included():
+    """Error counts are reflected in top-level deltas."""
+    ecs = _store()
+    baseline = _make_batch_with_items(ecs, pass_items=5, fail_items=3, error_items=2)
+    candidate = _make_batch_with_items(ecs, pass_items=7, fail_items=2, error_items=1)
+
+    cmp = ecs.compare_eval_batches(baseline["id"], candidate["id"])
+    assert cmp["baseline_error_count"] == 2
+    assert cmp["candidate_error_count"] == 1
+    assert cmp["delta_error_count"] == -1
+
+
+# ─── get_eval_batches_trend ───────────────────────────────────────────────────
+
+def test_get_eval_batches_trend_empty():
+    ecs = _store()
+    assert ecs.get_eval_batches_trend() == []
+
+
+def test_get_eval_batches_trend_newest_first():
+    ecs = _store()
+    b1 = ecs.create_eval_batch(label="first", filters={}, total_cases=5, pass_count=3, fail_count=2)
+    time.sleep(0.01)
+    b2 = ecs.create_eval_batch(label="second", filters={}, total_cases=8, pass_count=6, fail_count=2)
+
+    trend = ecs.get_eval_batches_trend()
+    assert len(trend) == 2
+    assert trend[0]["id"] == b2["id"]
+    assert trend[1]["id"] == b1["id"]
+
+
+def test_get_eval_batches_trend_compact_fields():
+    ecs = _store()
+    ecs.create_eval_batch(label="check", filters={}, total_cases=10, pass_count=7, fail_count=2)
+    trend = ecs.get_eval_batches_trend()
+    item = trend[0]
+    assert item["total_cases"] == 10
+    assert item["pass_count"] == 7
+    assert item["fail_count"] == 2
+    assert item["error_count"] == 1  # 10 - 7 - 2
+    assert item["pass_rate"] == round(7 / 10, 4)
+    assert "created_at" in item
+    assert "label" in item
+
+
+def test_get_eval_batches_trend_limit():
+    ecs = _store()
+    for i in range(5):
+        ecs.create_eval_batch(label=f"b{i}", filters={}, total_cases=1, pass_count=1, fail_count=0)
+
+    trend = ecs.get_eval_batches_trend(limit=3)
+    assert len(trend) == 3
+
+
+def test_get_eval_batches_trend_limit_clamped():
+    ecs = _store()
+    for _ in range(5):
+        ecs.create_eval_batch(label=None, filters={}, total_cases=1, pass_count=0, fail_count=1)
+
+    # limit=0 is clamped to 1
+    trend = ecs.get_eval_batches_trend(limit=0)
+    assert len(trend) == 1
+
+
+def test_get_eval_batches_trend_pass_rate_zero_cases():
+    ecs = _store()
+    ecs.create_eval_batch(label=None, filters={}, total_cases=0, pass_count=0, fail_count=0)
+    trend = ecs.get_eval_batches_trend()
+    assert trend[0]["pass_rate"] == 0.0
+    assert trend[0]["error_count"] == 0

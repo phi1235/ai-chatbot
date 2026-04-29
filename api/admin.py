@@ -1275,6 +1275,65 @@ async def list_eval_batch_items(batch_id: int, limit: int = 200, offset: int = 0
     }
 
 
+@router.get("/eval-batches/compare")
+async def compare_eval_batches(
+    candidate_batch_id: int,
+    baseline_batch_id: int | None = None,
+):
+    """Compare two eval batches; return delta summary + group breakdowns.
+
+    Provide both ``baseline_batch_id`` and ``candidate_batch_id`` for an
+    explicit comparison.  If only ``candidate_batch_id`` is supplied the
+    immediately previous batch (by created_at) is used as the baseline
+    automatically.
+    """
+    from orchestrator import eval_case_store
+
+    if baseline_batch_id is None:
+        # Convenience: find the batch created immediately before candidate
+        batches = eval_case_store.list_eval_batches(limit=50)  # newest first
+        resolved_baseline: int | None = None
+        for i, b in enumerate(batches):
+            if b["id"] == candidate_batch_id and i + 1 < len(batches):
+                resolved_baseline = batches[i + 1]["id"]
+                break
+        if resolved_baseline is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No previous batch found for batch {candidate_batch_id}. "
+                    "Provide baseline_batch_id explicitly."
+                ),
+            )
+        baseline_id = resolved_baseline
+    else:
+        baseline_id = baseline_batch_id
+
+    try:
+        result = eval_case_store.compare_eval_batches(baseline_id, candidate_batch_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return result
+
+
+@router.get("/eval-batches/trend")
+async def eval_batches_trend(limit: int = 10):
+    """Return recent eval batches as a compact trend summary. Newest first.
+
+    Each item includes: id, label, created_at, total_cases, pass_count,
+    fail_count, error_count, pass_rate.  Useful for spotting quality direction
+    across successive batch runs without loading full summaries.
+    """
+    from orchestrator import eval_case_store
+
+    items = eval_case_store.get_eval_batches_trend(limit=limit)
+    return {
+        "count": len(items),
+        "batches": items,
+    }
+
+
 @router.get("/eval-batches/{batch_id}")
 async def get_eval_batch(batch_id: int):
     """Get a single eval batch with full summary breakdown."""

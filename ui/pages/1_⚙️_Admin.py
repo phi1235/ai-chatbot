@@ -2944,6 +2944,35 @@ def get_eval_batch_items(batch_id: int, limit: int = 200) -> dict | None:
         return None
 
 
+def get_eval_batches_compare(
+    candidate_batch_id: int,
+    baseline_batch_id: int | None = None,
+) -> dict | None:
+    try:
+        params: dict = {"candidate_batch_id": candidate_batch_id}
+        if baseline_batch_id is not None:
+            params["baseline_batch_id"] = baseline_batch_id
+        r = http().get(f"{api_url()}/admin/eval-batches/compare", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot compare batches: {exc}")
+        return None
+
+
+def get_eval_batches_trend_data(limit: int = 10) -> dict | None:
+    try:
+        r = http().get(
+            f"{api_url()}/admin/eval-batches/trend",
+            params={"limit": limit},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch trend: {exc}")
+        return None
+
+
 # ─── Page: Eval Cases ────────────────────────────────────────────────────────
 
 def page_eval_cases():
@@ -3122,6 +3151,145 @@ def page_eval_cases():
                                     f"  run_id={it.get('eval_run_id') or '—'}"
                                     f"{err_note}"
                                 )
+
+    st.markdown("---")
+
+    # ── Trend history ──────────────────────────────────────────────────────────
+    with st.expander("Batch trend history", expanded=False):
+        st.caption("Recent batch runs in newest-first order. Quick scan of quality direction over time.")
+        trend_data = get_eval_batches_trend_data(limit=15)
+        if trend_data is None or not trend_data.get("batches"):
+            st.caption("No batch runs yet.")
+        else:
+            for item in trend_data["batches"]:
+                bid = item["id"]
+                blabel = item.get("label") or f"#{bid}"
+                total = item.get("total_cases", 0)
+                passes = item.get("pass_count", 0)
+                fails = item.get("fail_count", 0)
+                errors = item.get("error_count", 0)
+                rate = item.get("pass_rate", 0.0)
+                rate_pct = f"{rate * 100:.0f}%"
+                created = datetime.fromtimestamp(item["created_at"]).strftime("%Y-%m-%d %H:%M")
+                err_note = f" · {errors} err" if errors else ""
+                st.text(
+                    f"#{bid} · {blabel} · {rate_pct} pass"
+                    f" · {total} cases ({passes} pass / {fails} fail{err_note})"
+                    f" · {created}"
+                )
+
+    st.markdown("---")
+
+    # ── Batch comparison ──────────────────────────────────────────────────────
+    with st.expander("Compare two batch runs", expanded=False):
+        st.caption(
+            "Compare a candidate batch against a baseline to see pass/fail deltas "
+            "by root cause and topic."
+        )
+
+        # Build batch list for selection (newest first)
+        batch_list_data = get_eval_batches(limit=30)
+        batches_available = (batch_list_data or {}).get("batches", [])
+
+        if len(batches_available) < 2:
+            st.info("Need at least 2 batch runs to compare.")
+        else:
+            batch_options = {
+                f"#{b['id']} · {b.get('label') or '—'} · "
+                f"{b.get('pass_count', 0)}/{b.get('total_cases', 0)} pass"
+                f" · {datetime.fromtimestamp(b['created_at']).strftime('%Y-%m-%d %H:%M')}": b["id"]
+                for b in batches_available
+            }
+            option_labels = list(batch_options.keys())
+
+            cmp_cols = st.columns(2)
+            with cmp_cols[0]:
+                baseline_label = st.selectbox(
+                    "Baseline batch",
+                    options=option_labels,
+                    index=min(1, len(option_labels) - 1),
+                    key="cmp-baseline",
+                )
+            with cmp_cols[1]:
+                candidate_label = st.selectbox(
+                    "Candidate batch",
+                    options=option_labels,
+                    index=0,
+                    key="cmp-candidate",
+                )
+
+            if st.button("Compare", key="cmp-run-btn", type="primary"):
+                baseline_id = batch_options[baseline_label]
+                candidate_id = batch_options[candidate_label]
+                if baseline_id == candidate_id:
+                    st.warning("Select two different batches.")
+                else:
+                    with st.spinner("Comparing…"):
+                        cmp = get_eval_batches_compare(
+                            candidate_batch_id=candidate_id,
+                            baseline_batch_id=baseline_id,
+                        )
+                    if cmp:
+                        # Top-level summary
+                        st.markdown("**Summary**")
+                        top_cols = st.columns(4)
+                        b_rate = cmp.get("baseline_pass_rate", 0.0)
+                        c_rate = cmp.get("candidate_pass_rate", 0.0)
+                        delta_rate = cmp.get("delta_pass_rate", 0.0)
+                        top_cols[0].metric(
+                            "Baseline pass rate", f"{b_rate * 100:.0f}%"
+                        )
+                        top_cols[1].metric(
+                            "Candidate pass rate",
+                            f"{c_rate * 100:.0f}%",
+                            delta=f"{delta_rate * 100:+.0f}pp",
+                        )
+                        top_cols[2].metric(
+                            "Delta pass count",
+                            f"{cmp.get('delta_pass_count', 0):+d}",
+                        )
+                        top_cols[3].metric(
+                            "Delta fail count",
+                            f"{cmp.get('delta_fail_count', 0):+d}",
+                        )
+
+                        if cmp.get("sizes_differ"):
+                            st.caption(
+                                f"Note: batch sizes differ "
+                                f"(baseline={cmp['baseline_total_cases']}, "
+                                f"candidate={cmp['candidate_total_cases']})."
+                            )
+
+                        # Group breakdowns
+                        bk_cols = st.columns(2)
+                        with bk_cols[0]:
+                            by_rc = cmp.get("by_root_cause", {})
+                            if by_rc:
+                                st.markdown("**By root cause:**")
+                                for rc, v in by_rc.items():
+                                    b_fail = v["baseline"]["fail"]
+                                    c_fail = v["candidate"]["fail"]
+                                    d_fail = v["delta"]["fail"]
+                                    d_pass = v["delta"]["pass"]
+                                    arrow = "↑" if d_fail < 0 else ("↓" if d_fail > 0 else "=")
+                                    st.text(
+                                        f"  {rc}: fail {b_fail}→{c_fail} {arrow}"
+                                        f"  pass {d_pass:+d}"
+                                    )
+                        with bk_cols[1]:
+                            by_et = cmp.get("by_expected_topic", {})
+                            if by_et:
+                                st.markdown("**By topic:**")
+                                for et, v in by_et.items():
+                                    b_fail = v["baseline"]["fail"]
+                                    c_fail = v["candidate"]["fail"]
+                                    d_fail = v["delta"]["fail"]
+                                    d_pass = v["delta"]["pass"]
+                                    arrow = "↑" if d_fail < 0 else ("↓" if d_fail > 0 else "=")
+                                    st.text(
+                                        f"  {et}: fail {b_fail}→{c_fail} {arrow}"
+                                        f"  pass {d_pass:+d}"
+                                    )
 
     st.markdown("---")
 

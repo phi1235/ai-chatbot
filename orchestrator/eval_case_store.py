@@ -676,6 +676,115 @@ def _build_batch_summary(batch_id: int) -> dict:
     }
 
 
+# ─── Batch comparison ─────────────────────────────────────────────────────────
+
+def _build_group_delta(baseline_groups: dict, candidate_groups: dict) -> dict:
+    """Build per-group pass/fail delta comparing baseline vs candidate.
+
+    Takes the union of keys from both sides; missing values are treated as zero.
+    Each group entry shape:
+        {"baseline": {"pass": N, "fail": N},
+         "candidate": {"pass": N, "fail": N},
+         "delta":     {"pass": N, "fail": N}}
+    """
+    all_keys = set(baseline_groups.keys()) | set(candidate_groups.keys())
+    result: dict = {}
+    for key in sorted(all_keys):
+        b = baseline_groups.get(key, {"pass": 0, "fail": 0})
+        c = candidate_groups.get(key, {"pass": 0, "fail": 0})
+        result[key] = {
+            "baseline": {"pass": b.get("pass", 0), "fail": b.get("fail", 0)},
+            "candidate": {"pass": c.get("pass", 0), "fail": c.get("fail", 0)},
+            "delta": {
+                "pass": c.get("pass", 0) - b.get("pass", 0),
+                "fail": c.get("fail", 0) - b.get("fail", 0),
+            },
+        }
+    return result
+
+
+def compare_eval_batches(baseline_batch_id: int, candidate_batch_id: int) -> dict:
+    """Compare two persisted eval batches; return delta summary + group breakdowns.
+
+    Raises ValueError if either batch does not exist.
+    Includes top-level deltas for pass/fail/error/pass_rate plus
+    per-group deltas by root_cause and expected_topic.
+    The ``sizes_differ`` flag signals when batch sizes are unequal.
+    """
+    baseline = get_eval_batch(baseline_batch_id)
+    if baseline is None:
+        raise ValueError(f"Eval batch not found: id={baseline_batch_id}")
+    candidate = get_eval_batch(candidate_batch_id)
+    if candidate is None:
+        raise ValueError(f"Eval batch not found: id={candidate_batch_id}")
+
+    b_s = baseline["summary"]
+    c_s = candidate["summary"]
+
+    return {
+        "baseline_batch_id": baseline_batch_id,
+        "candidate_batch_id": candidate_batch_id,
+        "baseline_total_cases": b_s["total_cases"],
+        "candidate_total_cases": c_s["total_cases"],
+        "baseline_pass_count": b_s["pass_count"],
+        "candidate_pass_count": c_s["pass_count"],
+        "baseline_fail_count": b_s["fail_count"],
+        "candidate_fail_count": c_s["fail_count"],
+        "baseline_error_count": b_s["error_count"],
+        "candidate_error_count": c_s["error_count"],
+        "baseline_pass_rate": b_s["pass_rate"],
+        "candidate_pass_rate": c_s["pass_rate"],
+        "delta_pass_count": c_s["pass_count"] - b_s["pass_count"],
+        "delta_fail_count": c_s["fail_count"] - b_s["fail_count"],
+        "delta_error_count": c_s["error_count"] - b_s["error_count"],
+        "delta_pass_rate": round(c_s["pass_rate"] - b_s["pass_rate"], 4),
+        "sizes_differ": b_s["total_cases"] != c_s["total_cases"],
+        "by_root_cause": _build_group_delta(b_s["by_root_cause"], c_s["by_root_cause"]),
+        "by_expected_topic": _build_group_delta(
+            b_s["by_expected_topic"], c_s["by_expected_topic"]
+        ),
+    }
+
+
+def get_eval_batches_trend(*, limit: int = 10) -> list[dict]:
+    """Return recent eval batches as compact trend items. Newest first.
+
+    Each item: id, label, created_at, total_cases, pass_count, fail_count,
+    error_count (derived), pass_rate (derived).
+    Capped at 50 records maximum.
+    """
+    _ensure_schema()
+    clamped = max(1, min(limit, 50))
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM eval_batches
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (clamped,),
+        ).fetchall()
+    trend = []
+    for row in rows:
+        batch = _batch_row_to_dict(row)
+        total = batch["total_cases"]
+        pass_count = batch["pass_count"]
+        fail_count = batch["fail_count"]
+        error_count = max(0, total - pass_count - fail_count)
+        pass_rate = round(pass_count / total, 4) if total else 0.0
+        trend.append({
+            "id": batch["id"],
+            "label": batch["label"],
+            "created_at": batch["created_at"],
+            "total_cases": total,
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "error_count": error_count,
+            "pass_rate": pass_rate,
+        })
+    return trend
+
+
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
 def _case_row_to_dict(row: sqlite3.Row) -> dict:
