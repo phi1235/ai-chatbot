@@ -1605,6 +1605,106 @@ async def get_gate_run(run_id: int):
     return run
 
 
+# ─── Eval Gate Triage ────────────────────────────────────────────────────────
+
+@router.get("/eval-gates/runs/{run_id}/triage")
+async def get_gate_run_triage(run_id: int):
+    """Get full triage data for a gate run.
+
+    Returns gate run metadata, config summary, candidate/baseline batch
+    summaries, a compact decision breakdown, and per-case triage items
+    with regression classification.
+
+    Each triage item contains:
+      - eval_case_id, question, expected_topic, root_cause
+      - candidate_outcome (pass/fail/error) and baseline_outcome
+      - regression_class: new_fail | still_fail | improved |
+                          new_error | still_error | still_pass
+      - candidate failure reason (from failed checks)
+      - answer excerpt, citations_count, retrieval_count
+
+    Derived from existing batch/case/run data; no new records are written.
+    """
+    from orchestrator.eval_gate_triage import get_gate_run_triage as _triage
+
+    result = _triage(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Gate run not found.")
+    return result
+
+
+_VALID_REGRESSION_CLASSES = frozenset({
+    "new_fail", "still_fail", "improved", "new_error", "still_error", "still_pass",
+})
+
+
+@router.get("/eval-gates/runs/{run_id}/items")
+async def get_gate_run_triage_items(
+    run_id: int,
+    regression_class: str | None = None,
+    root_cause: str | None = None,
+    expected_topic: str | None = None,
+    outcome: str | None = None,
+):
+    """Get triage items for a gate run with optional filters.
+
+    Filters (all optional, ANDed together):
+      - ``regression_class``: new_fail | still_fail | improved |
+                              new_error | still_error | still_pass
+      - ``root_cause``:       match exact root cause string
+      - ``expected_topic``:   match exact topic string
+      - ``outcome``:          pass | fail | error  (candidate outcome)
+    """
+    from orchestrator import eval_gate_store
+    from orchestrator.eval_gate_triage import filter_triage_items
+    from orchestrator.eval_gate_triage import get_gate_run_triage as _triage
+
+    gate_run = eval_gate_store.get_gate_run(run_id)
+    if gate_run is None:
+        raise HTTPException(status_code=404, detail="Gate run not found.")
+
+    if regression_class and regression_class not in _VALID_REGRESSION_CLASSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"regression_class must be one of: "
+                f"{', '.join(sorted(_VALID_REGRESSION_CLASSES))}"
+            ),
+        )
+    if outcome and outcome not in ("pass", "fail", "error"):
+        raise HTTPException(
+            status_code=400,
+            detail="outcome must be one of: pass, fail, error",
+        )
+
+    triage = _triage(run_id)
+    if triage is None:
+        raise HTTPException(status_code=404, detail="Gate run not found.")
+
+    items = filter_triage_items(
+        triage["items"],
+        regression_class=regression_class,
+        root_cause=root_cause,
+        expected_topic=expected_topic,
+        outcome=outcome,
+    )
+
+    return {
+        "run_id": run_id,
+        "decision": gate_run.get("decision"),
+        "total_items": len(triage["items"]),
+        "filtered_count": len(items),
+        "filters": {
+            "regression_class": regression_class,
+            "root_cause": root_cause,
+            "expected_topic": expected_topic,
+            "outcome": outcome,
+        },
+        "triage_meta": triage.get("triage_meta") or {},
+        "items": items,
+    }
+
+
 @router.post("/eval-gates/run-nightly")
 async def run_nightly_gates():
     """Trigger all enabled nightly gate configs.

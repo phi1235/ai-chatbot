@@ -3527,7 +3527,175 @@ def run_nightly_gates_api() -> dict | None:
         return None
 
 
+def get_gate_run_triage_api(run_id: int) -> dict | None:
+    try:
+        r = http().get(f"{api_url()}/admin/eval-gates/runs/{run_id}/triage")
+        if r.status_code == 404:
+            st.error(f"Gate run #{run_id} not found.")
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch triage data: {exc}")
+        return None
+
+
+def get_gate_run_items_api(
+    run_id: int,
+    *,
+    regression_class: str | None = None,
+    root_cause: str | None = None,
+    expected_topic: str | None = None,
+    outcome: str | None = None,
+) -> dict | None:
+    try:
+        params: dict = {}
+        if regression_class:
+            params["regression_class"] = regression_class
+        if root_cause:
+            params["root_cause"] = root_cause
+        if expected_topic:
+            params["expected_topic"] = expected_topic
+        if outcome:
+            params["outcome"] = outcome
+        r = http().get(
+            f"{api_url()}/admin/eval-gates/runs/{run_id}/items",
+            params=params,
+        )
+        if r.status_code == 404:
+            st.error(f"Gate run #{run_id} not found.")
+            return None
+        if r.status_code == 400:
+            st.error(r.json().get("detail", "Invalid filter"))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch triage items: {exc}")
+        return None
+
+
 # ─── Page: Eval Gates ────────────────────────────────────────────────────────
+
+def _render_regression_badge(regression_class: str) -> str:
+    """Return a compact label for a regression class."""
+    labels = {
+        "new_fail": "NEW FAIL",
+        "still_fail": "STILL FAIL",
+        "new_error": "NEW ERROR",
+        "still_error": "STILL ERROR",
+        "improved": "IMPROVED",
+        "still_pass": "STILL PASS",
+    }
+    return labels.get(regression_class, regression_class.upper())
+
+
+def _render_outcome_badge(outcome: str) -> str:
+    return {"pass": "PASS", "fail": "FAIL", "error": "ERROR"}.get(outcome, outcome.upper())
+
+
+def _render_triage_item(item: dict, idx: int) -> None:
+    """Render one triage item as a compact expander."""
+    rc = item.get("regression_class", "")
+    candidate_outcome = item.get("candidate_outcome", "")
+    question = item.get("question") or "(no question)"
+
+    # Choose color for regression class
+    rc_colors = {
+        "new_fail": "red",
+        "still_fail": "orange",
+        "new_error": "red",
+        "still_error": "orange",
+        "improved": "green",
+        "still_pass": "green",
+    }
+    color = rc_colors.get(rc, "gray")
+    rc_label = _render_regression_badge(rc)
+    outcome_label = _render_outcome_badge(candidate_outcome)
+    baseline_label = _render_outcome_badge(item.get("baseline_outcome", "none"))
+
+    header = (
+        f"**:{color}[{rc_label}]**  ·  case #{item.get('eval_case_id')}  ·  "
+        f"candidate={outcome_label}  baseline={baseline_label}  ·  "
+        f"{question[:80]}{'…' if len(question) > 80 else ''}"
+    )
+
+    with st.expander(header, expanded=False):
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.markdown("**Question**")
+            st.text(question)
+            if item.get("root_cause"):
+                st.markdown(f"**Root cause:** `{item['root_cause']}`")
+            if item.get("expected_topic"):
+                st.markdown(f"**Expected topic:** `{item['expected_topic']}`")
+            st.markdown(
+                f"**Candidate:** `{outcome_label}`  ·  **Baseline:** `{baseline_label}`  ·  "
+                f"**Class:** `{rc_label}`"
+            )
+            if item.get("candidate_error"):
+                st.error(f"Execution error: {item['candidate_error']}")
+            if item.get("failure_reason"):
+                st.warning(f"Failure reason: {item['failure_reason']}")
+
+        with col_right:
+            st.markdown("**Candidate answer excerpt**")
+            excerpt = item.get("answer_excerpt") or "—"
+            st.text(excerpt[:300])
+
+            details: list[str] = []
+            if item.get("citations_count") is not None:
+                details.append(f"citations: {item['citations_count']}")
+            if item.get("retrieval_count") is not None:
+                details.append(f"retrieval: {item['retrieval_count']}")
+            if item.get("is_fallback"):
+                details.append("is_fallback: yes")
+            if details:
+                st.caption("  ·  ".join(details))
+
+            cit_summary = item.get("citations_summary") or []
+            if cit_summary:
+                st.markdown("**Top citations**")
+                for c in cit_summary[:3]:
+                    title = c.get("title") or c.get("url") or "—"
+                    url = c.get("url") or ""
+                    if url:
+                        st.markdown(f"- [{title}]({url})")
+                    else:
+                        st.markdown(f"- {title}")
+
+        # Expectations summary
+        exp = item.get("eval_expectations") or {}
+        if exp:
+            exp_parts = []
+            if exp.get("should_not_fallback") is True:
+                exp_parts.append("must not fallback")
+            if exp.get("should_have_citations") is True:
+                exp_parts.append("must have citations")
+            mrc = exp.get("min_retrieval_count")
+            if mrc is not None:
+                exp_parts.append(f"min retrieval={mrc}")
+            if exp_parts:
+                st.caption("Expectations: " + ", ".join(exp_parts))
+
+        # Suggested next action
+        from orchestrator.eval_gate_triage import suggest_next_action
+        suggestion = suggest_next_action(item.get("root_cause"))
+        st.info(f"Suggested next action: {suggestion}")
+
+        # Quick action hook into existing feedback action queue
+        if item.get("feedback_id"):
+            fb_id = item["feedback_id"]
+            st.caption(f"Linked feedback_id: {fb_id}")
+            if st.button("Create action item", key=f"triage-create-action-{fb_id}-{idx}"):
+                result = create_feedback_action_item(fb_id)
+                if result:
+                    st.success(
+                        f"Created action item #{result['id']} for feedback #{fb_id} "
+                        f"({result.get('suggested_action', 'n/a')})."
+                    )
+
 
 def page_eval_gates():
     render_page_header(
@@ -3535,7 +3703,9 @@ def page_eval_gates():
         "Automated eval gate configs and run history",
     )
 
-    tab_configs, tab_runs, tab_new = st.tabs(["Gate Configs", "Recent Runs", "New Config"])
+    tab_configs, tab_runs, tab_triage, tab_new = st.tabs(
+        ["Gate Configs", "Recent Runs", "Triage", "New Config"]
+    )
 
     # ── Tab: Gate Configs ──────────────────────────────────────────────────────
     with tab_configs:
@@ -3684,17 +3854,237 @@ def page_eval_gates():
                 if fail_delta is not None and fail_delta != 0:
                     delta_str += f"  fail count {fail_delta:+d}"
 
-                st.markdown(
-                    f"**#{run.get('id')}** · {run.get('kind', '?')} · "
-                    f"**:{color}[{icon}]** · {run_at_str}"
-                    f"{delta_str}  \n"
-                    f"*{run.get('decision_reason', '')}*  \n"
-                    f"config={run.get('config_id')}  "
-                    f"candidate={run.get('candidate_batch_id') or '—'}  "
-                    f"baseline={run.get('baseline_batch_id') or '—'}  "
-                    f"trigger={run.get('trigger_source', '?')}"
-                )
+                run_id = run.get("id")
+                col_info, col_triage = st.columns([8, 2])
+                with col_info:
+                    st.markdown(
+                        f"**#{run_id}** · {run.get('kind', '?')} · "
+                        f"**:{color}[{icon}]** · {run_at_str}"
+                        f"{delta_str}  \n"
+                        f"*{run.get('decision_reason', '')}*  \n"
+                        f"config={run.get('config_id')}  "
+                        f"candidate={run.get('candidate_batch_id') or '—'}  "
+                        f"baseline={run.get('baseline_batch_id') or '—'}  "
+                        f"trigger={run.get('trigger_source', '?')}"
+                    )
+                with col_triage:
+                    if st.button(
+                        "Open triage",
+                        key=f"open-triage-{run_id}",
+                        help="Load triage view for this run in the Triage tab",
+                    ):
+                        st.session_state["eval_gate_triage_run_id"] = run_id
+                        st.info(
+                            f"Run #{run_id} selected. Switch to the **Triage** tab to inspect."
+                        )
                 st.markdown("---")
+
+    # ── Tab: Triage ───────────────────────────────────────────────────────────
+    with tab_triage:
+        st.subheader("Gate Run Triage")
+        st.caption(
+            "Inspect failed/error cases for a gate run. "
+            "Click 'Open triage' on any run in the Recent Runs tab, or enter a run ID below."
+        )
+
+        default_run_id = st.session_state.get("eval_gate_triage_run_id", "")
+        triage_run_id_input = st.text_input(
+            "Gate run ID",
+            value=str(default_run_id) if default_run_id else "",
+            placeholder="e.g. 3",
+            key="triage-run-id-input",
+        )
+
+        if not triage_run_id_input.strip():
+            st.info("Enter a gate run ID above, or use 'Open triage' from the Recent Runs tab.")
+        else:
+            try:
+                triage_run_id = int(triage_run_id_input.strip())
+            except ValueError:
+                st.error("Run ID must be an integer.")
+                triage_run_id = None
+
+            if triage_run_id is not None:
+                triage_data = get_gate_run_triage_api(triage_run_id)
+
+                if triage_data:
+                    gr = triage_data.get("gate_run") or {}
+                    cfg = triage_data.get("config") or {}
+                    ds = triage_data.get("decision_summary") or {}
+                    c_batch = triage_data.get("candidate_batch") or {}
+                    b_batch = triage_data.get("baseline_batch") or {}
+                    triage_meta = triage_data.get("triage_meta") or {}
+                    all_items = triage_data.get("items") or []
+
+                    # ── Gate run summary ──────────────────────────────────────
+                    decision = gr.get("decision", "error")
+                    run_at = gr.get("created_at")
+                    run_at_str = (
+                        datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M")
+                        if run_at else "?"
+                    )
+
+                    st.markdown(
+                        f"**Run #{gr.get('id')}**  ·  "
+                        f"config: *{cfg.get('name', '?')}* (#{cfg.get('id')})  ·  "
+                        f"kind: `{gr.get('kind', '?')}`  ·  "
+                        f"trigger: `{gr.get('trigger_source', '?')}`  ·  "
+                        f"{run_at_str}"
+                    )
+
+                    # Decision banner
+                    if decision == "pass":
+                        st.success(f"PASS — {ds.get('decision_reason', '')}")
+                    elif decision == "no_baseline":
+                        st.warning(f"NO BASELINE — {ds.get('decision_reason', '')}")
+                    elif decision == "fail":
+                        st.error(f"FAIL — {ds.get('decision_reason', '')}")
+                    else:
+                        st.error(f"ERROR — {ds.get('decision_reason', '')}")
+
+                    # ── Decision breakdown ────────────────────────────────────
+                    with st.expander("Decision breakdown", expanded=True):
+                        dcol1, dcol2, dcol3, dcol4 = st.columns(4)
+                        with dcol1:
+                            prd = ds.get("pass_rate_drop")
+                            st.metric(
+                                "Pass rate drop",
+                                f"{prd * 100:+.1f}%" if prd is not None else "—",
+                            )
+                        with dcol2:
+                            fcd = ds.get("fail_count_delta")
+                            st.metric(
+                                "Fail count delta",
+                                f"{fcd:+d}" if fcd is not None else "—",
+                            )
+                        with dcol3:
+                            ecd = ds.get("error_count_delta")
+                            st.metric(
+                                "Error count delta",
+                                f"{ecd:+d}" if ecd is not None else "—",
+                            )
+                        with dcol4:
+                            st.metric(
+                                "Baseline",
+                                "Yes" if ds.get("has_baseline") else "No",
+                            )
+
+                    # ── Batch summaries ───────────────────────────────────────
+                    if c_batch or b_batch:
+                        with st.expander("Batch summaries", expanded=False):
+                            bcol1, bcol2 = st.columns(2)
+                            with bcol1:
+                                st.markdown("**Candidate batch**")
+                                if c_batch:
+                                    cs = c_batch.get("summary") or {}
+                                    st.caption(
+                                        f"id={c_batch.get('id')}  "
+                                        f"label={c_batch.get('label') or '—'}  "
+                                        f"total={cs.get('total_cases', 0)}  "
+                                        f"pass={cs.get('pass_count', 0)}  "
+                                        f"fail={cs.get('fail_count', 0)}  "
+                                        f"error={cs.get('error_count', 0)}  "
+                                        f"pass_rate={cs.get('pass_rate', 0):.1%}"
+                                    )
+                                else:
+                                    st.caption("—")
+                            with bcol2:
+                                st.markdown("**Baseline batch**")
+                                if b_batch:
+                                    bs = b_batch.get("summary") or {}
+                                    st.caption(
+                                        f"id={b_batch.get('id')}  "
+                                        f"label={b_batch.get('label') or '—'}  "
+                                        f"total={bs.get('total_cases', 0)}  "
+                                        f"pass={bs.get('pass_count', 0)}  "
+                                        f"fail={bs.get('fail_count', 0)}  "
+                                        f"error={bs.get('error_count', 0)}  "
+                                        f"pass_rate={bs.get('pass_rate', 0):.1%}"
+                                    )
+                                else:
+                                    st.caption("No baseline batch.")
+
+                    # ── Regression class summary ─────────────────────────────
+                    if all_items:
+                        rc_counts: dict[str, int] = {}
+                        for it in all_items:
+                            rc = it.get("regression_class") or "unknown"
+                            rc_counts[rc] = rc_counts.get(rc, 0) + 1
+
+                        rc_order = [
+                            "new_fail", "still_fail", "new_error",
+                            "still_error", "improved", "still_pass",
+                        ]
+                        summary_parts = []
+                        for rc in rc_order:
+                            cnt = rc_counts.get(rc, 0)
+                            if cnt:
+                                summary_parts.append(f"{rc}={cnt}")
+                        if summary_parts:
+                            st.caption("Regression breakdown: " + "  ·  ".join(summary_parts))
+
+                    # ── Filters ───────────────────────────────────────────────
+                    st.markdown("**Filter cases**")
+                    fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+                    with fcol1:
+                        regression_classes_available = sorted({
+                            it.get("regression_class") for it in all_items
+                            if it.get("regression_class")
+                        })
+                        f_rc = st.selectbox(
+                            "Regression class",
+                            ["All"] + regression_classes_available,
+                            key=f"triage-rc-{triage_run_id}",
+                        )
+                    with fcol2:
+                        root_causes_available = sorted({
+                            it.get("root_cause") for it in all_items if it.get("root_cause")
+                        })
+                        f_root_cause = st.selectbox(
+                            "Root cause",
+                            ["All"] + root_causes_available,
+                            key=f"triage-rca-{triage_run_id}",
+                        )
+                    with fcol3:
+                        topics_available = sorted({
+                            it.get("expected_topic") for it in all_items if it.get("expected_topic")
+                        })
+                        f_topic = st.selectbox(
+                            "Expected topic",
+                            ["All"] + topics_available,
+                            key=f"triage-topic-{triage_run_id}",
+                        )
+                    with fcol4:
+                        f_outcome = st.selectbox(
+                            "Outcome",
+                            ["All", "fail", "error", "pass"],
+                            key=f"triage-outcome-{triage_run_id}",
+                        )
+
+                    filtered_data = get_gate_run_items_api(
+                        triage_run_id,
+                        regression_class=None if f_rc == "All" else f_rc,
+                        root_cause=None if f_root_cause == "All" else f_root_cause,
+                        expected_topic=None if f_topic == "All" else f_topic,
+                        outcome=None if f_outcome == "All" else f_outcome,
+                    )
+                    filtered_items = (filtered_data or {}).get("items") or []
+                    filtered_count = (filtered_data or {}).get("filtered_count", len(filtered_items))
+                    total_items = (filtered_data or {}).get("total_items", len(all_items))
+
+                    max_items = triage_meta.get("max_items")
+                    if triage_meta.get("truncated") and max_items:
+                        st.caption(
+                            f"Triage currently shows up to {max_items} candidate cases for one gate run in this MVP."
+                        )
+
+                    st.caption(f"Showing {filtered_count} of {total_items} cases")
+
+                    if not filtered_items:
+                        st.info("No cases match the current filters.")
+                    else:
+                        for idx, item in enumerate(filtered_items):
+                            _render_triage_item(item, idx)
 
     # ── Tab: New Config ────────────────────────────────────────────────────────
     with tab_new:
