@@ -800,6 +800,7 @@ with st.sidebar:
             "Feedback",
             "Action Queue",
             "Eval Cases",
+            "Eval Gates",
             "Sessions",
             "Maintenance",
         ],
@@ -3434,6 +3435,337 @@ def page_eval_cases():
                     st.caption("No run history.")
 
 
+# ─── Eval Gates API helpers ──────────────────────────────────────────────────
+
+def get_gate_configs(kind: str | None = None, enabled: bool | None = None) -> dict | None:
+    try:
+        params: dict = {}
+        if kind:
+            params["kind"] = kind
+        if enabled is not None:
+            params["enabled"] = str(enabled).lower()
+        r = http().get(f"{api_url()}/admin/eval-gates/configs", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch gate configs: {exc}")
+        return None
+
+
+def create_gate_config_api(payload: dict) -> dict | None:
+    try:
+        r = http().post(f"{api_url()}/admin/eval-gates/configs", json=payload)
+        if r.status_code == 400:
+            st.error(r.json().get("detail", "Validation error"))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Create gate config failed: {exc}")
+        return None
+
+
+def patch_gate_config_api(config_id: int, updates: dict) -> dict | None:
+    try:
+        r = http().patch(f"{api_url()}/admin/eval-gates/configs/{config_id}", json=updates)
+        if r.status_code in (400, 404):
+            st.error(r.json().get("detail", "Update failed"))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Patch gate config failed: {exc}")
+        return None
+
+
+def run_gate_config_api(config_id: int, trigger_source: str = "manual") -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/eval-gates/configs/{config_id}/run",
+            json={"trigger_source": trigger_source},
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
+        if r.status_code == 404:
+            st.error("Gate config not found.")
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Gate run failed: {exc}")
+        return None
+
+
+def get_gate_runs(
+    config_id: int | None = None,
+    kind: str | None = None,
+    limit: int = 20,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit}
+        if config_id is not None:
+            params["config_id"] = config_id
+        if kind:
+            params["kind"] = kind
+        r = http().get(f"{api_url()}/admin/eval-gates/runs", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch gate runs: {exc}")
+        return None
+
+
+def run_nightly_gates_api() -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/eval-gates/run-nightly",
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Nightly gate run failed: {exc}")
+        return None
+
+
+# ─── Page: Eval Gates ────────────────────────────────────────────────────────
+
+def page_eval_gates():
+    render_page_header(
+        "Eval Gates",
+        "Automated eval gate configs and run history",
+    )
+
+    tab_configs, tab_runs, tab_new = st.tabs(["Gate Configs", "Recent Runs", "New Config"])
+
+    # ── Tab: Gate Configs ──────────────────────────────────────────────────────
+    with tab_configs:
+        st.subheader("Gate Configs")
+
+        data = get_gate_configs()
+        configs = (data or {}).get("configs", [])
+
+        if not configs:
+            st.info("No gate configs defined yet. Use the 'New Config' tab to add one.")
+        else:
+            for cfg in configs:
+                cfg_id = cfg["id"]
+                kind_badge = cfg["kind"].upper()
+                enabled_badge = "enabled" if cfg["enabled"] else "disabled"
+                col_hdr, col_toggle, col_run = st.columns([5, 2, 2])
+
+                with col_hdr:
+                    st.markdown(
+                        f"**{cfg['name']}**  ·  `{kind_badge}`  ·  *{enabled_badge}*  "
+                        f"·  baseline={cfg['baseline_mode']}"
+                    )
+                    thresholds = []
+                    if cfg.get("max_pass_rate_drop") is not None:
+                        thresholds.append(f"pass rate drop ≤ {cfg['max_pass_rate_drop']:.0%}")
+                    if cfg.get("max_fail_count_increase") is not None:
+                        thresholds.append(f"fail count increase ≤ {cfg['max_fail_count_increase']}")
+                    if cfg.get("block_on_error_increase"):
+                        thresholds.append("block on error increase")
+                    filters = []
+                    if cfg.get("root_cause"):
+                        filters.append(f"root_cause={cfg['root_cause']}")
+                    if cfg.get("expected_topic"):
+                        filters.append(f"topic={cfg['expected_topic']}")
+                    if filters:
+                        st.caption("Filters: " + ", ".join(filters))
+                    if thresholds:
+                        st.caption("Thresholds: " + ", ".join(thresholds))
+
+                with col_toggle:
+                    new_state = not cfg["enabled"]
+                    toggle_label = "Disable" if cfg["enabled"] else "Enable"
+                    if st.button(toggle_label, key=f"gate-toggle-{cfg_id}"):
+                        result = patch_gate_config_api(cfg_id, {"enabled": new_state})
+                        if result:
+                            st.rerun()
+
+                with col_run:
+                    if st.button("Run now", key=f"gate-run-{cfg_id}", type="primary"):
+                        with st.spinner("Running gate..."):
+                            gate_run = run_gate_config_api(cfg_id)
+                        if gate_run:
+                            decision = gate_run.get("decision", "error")
+                            reason = gate_run.get("decision_reason", "")
+                            if decision == "pass":
+                                st.success(f"PASS — {reason}")
+                            elif decision == "no_baseline":
+                                st.warning(f"NO BASELINE — {reason}")
+                            elif decision == "fail":
+                                st.error(f"FAIL — {reason}")
+                            else:
+                                st.error(f"ERROR — {reason}")
+                            st.rerun()
+
+                st.markdown("---")
+
+        # Nightly trigger
+        st.subheader("Nightly Trigger")
+        st.caption("Runs all enabled nightly gate configs (equivalent to nightly cron call).")
+        if st.button("Run all nightly gates"):
+            with st.spinner("Running nightly gates..."):
+                result = run_nightly_gates_api()
+            if result is not None:
+                ran = result.get("ran", 0)
+                any_fail = result.get("any_fail", False)
+                if any_fail:
+                    st.error(f"Nightly run completed: {ran} config(s) — some FAILED.")
+                elif ran == 0:
+                    st.info("No enabled nightly configs found.")
+                else:
+                    st.success(f"Nightly run completed: {ran} config(s) — all PASSED.")
+                for s in result.get("summary", []):
+                    decision = s.get("decision", "")
+                    icon = "✓" if decision == "pass" else ("~" if decision == "no_baseline" else "✗")
+                    st.caption(
+                        f"{icon} config #{s.get('config_id')}  "
+                        f"run #{s.get('gate_run_id')}  "
+                        f"{decision.upper()}  —  {s.get('decision_reason', '')}"
+                    )
+
+    # ── Tab: Recent Runs ───────────────────────────────────────────────────────
+    with tab_runs:
+        st.subheader("Recent Gate Runs")
+
+        col_filter_kind, col_filter_decision, col_filter_limit = st.columns(3)
+        with col_filter_kind:
+            filter_kind = st.selectbox("Kind", ["All", "nightly", "ci"], key="gr-kind")
+        with col_filter_decision:
+            filter_decision = st.selectbox(
+                "Decision", ["All", "pass", "fail", "no_baseline", "error"], key="gr-decision"
+            )
+        with col_filter_limit:
+            runs_limit = st.number_input("Limit", min_value=5, max_value=100, value=20, step=5, key="gr-limit")
+
+        runs_data = get_gate_runs(
+            kind=filter_kind if filter_kind != "All" else None,
+            limit=int(runs_limit),
+        )
+        runs = (runs_data or {}).get("runs", [])
+
+        # Client-side decision filter
+        if filter_decision != "All":
+            runs = [r for r in runs if r.get("decision") == filter_decision]
+
+        if not runs:
+            st.info("No gate runs found.")
+        else:
+            for run in runs:
+                decision = run.get("decision", "error")
+                if decision == "pass":
+                    icon = "✓ PASS"
+                    color = "green"
+                elif decision == "no_baseline":
+                    icon = "~ NO BASELINE"
+                    color = "orange"
+                elif decision == "fail":
+                    icon = "✗ FAIL"
+                    color = "red"
+                else:
+                    icon = "! ERROR"
+                    color = "red"
+
+                run_at = run.get("created_at")
+                run_at_str = (
+                    datetime.fromtimestamp(run_at).strftime("%Y-%m-%d %H:%M")
+                    if run_at else "?"
+                )
+
+                rate_drop = run.get("pass_rate_drop")
+                delta_str = ""
+                if rate_drop is not None:
+                    pct = rate_drop * 100
+                    delta_str = f"  pass rate {pct:+.1f}%"
+
+                fail_delta = run.get("fail_count_delta")
+                if fail_delta is not None and fail_delta != 0:
+                    delta_str += f"  fail count {fail_delta:+d}"
+
+                st.markdown(
+                    f"**#{run.get('id')}** · {run.get('kind', '?')} · "
+                    f"**:{color}[{icon}]** · {run_at_str}"
+                    f"{delta_str}  \n"
+                    f"*{run.get('decision_reason', '')}*  \n"
+                    f"config={run.get('config_id')}  "
+                    f"candidate={run.get('candidate_batch_id') or '—'}  "
+                    f"baseline={run.get('baseline_batch_id') or '—'}  "
+                    f"trigger={run.get('trigger_source', '?')}"
+                )
+                st.markdown("---")
+
+    # ── Tab: New Config ────────────────────────────────────────────────────────
+    with tab_new:
+        st.subheader("Create Gate Config")
+
+        with st.form("new_gate_config"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                nc_name = st.text_input("Name *", placeholder="nightly-default")
+                nc_kind = st.selectbox("Kind", ["nightly", "ci"])
+                nc_enabled = st.checkbox("Enabled", value=True)
+                nc_status_filter = st.selectbox("Case status filter", ["active", "archived"])
+                nc_root_cause = st.text_input("Root cause filter (optional)")
+                nc_expected_topic = st.text_input("Expected topic filter (optional)")
+            with col_b:
+                nc_limit = st.number_input(
+                    "Limit cases (optional)", min_value=0, max_value=200, value=0, step=10
+                )
+                nc_label_template = st.text_input(
+                    "Run label template (optional)", placeholder="{kind}-gate-{date}"
+                )
+                nc_baseline_mode = st.selectbox(
+                    "Baseline mode",
+                    ["previous_gate_run", "previous_batch"],
+                    help=(
+                        "previous_gate_run: compare against the candidate batch from the last run "
+                        "of this config.  previous_batch: use the immediately prior batch."
+                    ),
+                )
+                nc_pass_rate_drop = st.number_input(
+                    "Max pass rate drop (0–1, blank = no limit)",
+                    min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f"
+                )
+                nc_fail_count_increase = st.number_input(
+                    "Max fail count increase (blank = no limit)",
+                    min_value=0, max_value=500, value=0, step=1
+                )
+                nc_block_error = st.checkbox("Block on error count increase", value=False)
+
+            submitted = st.form_submit_button("Create config", type="primary")
+            if submitted:
+                if not nc_name.strip():
+                    st.error("Name is required.")
+                else:
+                    payload: dict = {
+                        "name": nc_name.strip(),
+                        "kind": nc_kind,
+                        "enabled": nc_enabled,
+                        "status_filter": nc_status_filter,
+                        "baseline_mode": nc_baseline_mode,
+                        "block_on_error_increase": nc_block_error,
+                    }
+                    if nc_root_cause.strip():
+                        payload["root_cause"] = nc_root_cause.strip()
+                    if nc_expected_topic.strip():
+                        payload["expected_topic"] = nc_expected_topic.strip()
+                    if nc_limit > 0:
+                        payload["limit_cases"] = int(nc_limit)
+                    if nc_label_template.strip():
+                        payload["run_label_template"] = nc_label_template.strip()
+                    if nc_pass_rate_drop > 0:
+                        payload["max_pass_rate_drop"] = nc_pass_rate_drop
+                    if nc_fail_count_increase > 0:
+                        payload["max_fail_count_increase"] = int(nc_fail_count_increase)
+
+                    result = create_gate_config_api(payload)
+                    if result:
+                        st.success(f"Gate config '{result['name']}' created (id={result['id']}).")
+                        st.rerun()
+
+
 # ─── Render selected page ───────────────────────────────────────────────────
 PAGE_RENDERERS = {
     "Dashboard": page_dashboard,
@@ -3444,6 +3776,7 @@ PAGE_RENDERERS = {
     "Feedback": page_feedback,
     "Action Queue": page_feedback_actions,
     "Eval Cases": page_eval_cases,
+    "Eval Gates": page_eval_gates,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,
 }
