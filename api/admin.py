@@ -1131,6 +1131,161 @@ async def eval_cases_summary():
     return eval_case_store.count_summary()
 
 
+# ─── Eval Batch Run ──────────────────────────────────────────────────────────
+
+class RunBatchRequest(BaseModel):
+    status: str = "active"
+    root_cause: str | None = None
+    expected_topic: str | None = None
+    limit: int | None = None
+    label: str | None = None
+
+
+@router.post("/eval-cases/run-batch")
+async def run_eval_batch(req: RunBatchRequest):
+    """Run many eval cases in one batch operation.
+
+    Selects eval cases matching the given filters, runs each through the
+    current pipeline, persists batch + item records, and returns a compact
+    batch summary.
+
+    Per-case execution failures are recorded as failed items with an error
+    field; the batch continues deterministically and always completes.
+    """
+    from orchestrator import eval_case_store
+    from orchestrator.eval_runner import run_eval_case as _run
+
+    if req.status not in ("active", "archived"):
+        raise HTTPException(status_code=400, detail="status phải là 'active' hoặc 'archived'.")
+
+    case_limit = min(req.limit or 200, 200)
+    cases = eval_case_store.list_eval_cases(
+        status=req.status,
+        root_cause=req.root_cause,
+        expected_topic=req.expected_topic,
+        limit=case_limit,
+    )
+
+    if not cases:
+        raise HTTPException(
+            status_code=400,
+            detail="No matching eval cases found. Adjust filters or add eval cases first.",
+        )
+
+    filters: dict[str, Any] = {
+        "status": req.status,
+        "root_cause": req.root_cause,
+        "expected_topic": req.expected_topic,
+        "limit": req.limit,
+    }
+
+    # Run each case; record success or per-case execution error
+    item_results = []
+    for case in cases:
+        case_id = case["id"]
+        try:
+            run = _run(case)
+            item_results.append({
+                "eval_case_id": case_id,
+                "eval_run_id": run["id"],
+                "passed": run["pass"],
+                "root_cause": case.get("root_cause"),
+                "expected_topic": case.get("expected_topic"),
+                "error": None,
+            })
+        except Exception as exc:
+            logger.warning(
+                "Eval batch: case run failed",
+                extra={"case_id": case_id, "error": str(exc)},
+            )
+            item_results.append({
+                "eval_case_id": case_id,
+                "eval_run_id": None,
+                "passed": None,
+                "root_cause": case.get("root_cause"),
+                "expected_topic": case.get("expected_topic"),
+                "error": str(exc)[:500],
+            })
+
+    pass_count = sum(1 for it in item_results if it["passed"] is True)
+    fail_count = sum(1 for it in item_results if it["passed"] is False)
+
+    # Persist batch record
+    batch = eval_case_store.create_eval_batch(
+        label=(req.label or "").strip() or None,
+        filters=filters,
+        total_cases=len(item_results),
+        pass_count=pass_count,
+        fail_count=fail_count,
+    )
+    batch_id = batch["id"]
+
+    # Persist batch items
+    for it in item_results:
+        eval_case_store.create_eval_batch_item(
+            batch_id=batch_id,
+            eval_case_id=it["eval_case_id"],
+            eval_run_id=it["eval_run_id"],
+            passed=it["passed"],
+            root_cause=it["root_cause"],
+            expected_topic=it["expected_topic"],
+            error=it["error"],
+        )
+
+    logger.info(
+        "Eval batch run completed",
+        extra={
+            "batch_id": batch_id,
+            "total": len(item_results),
+            "pass": pass_count,
+            "fail": fail_count,
+        },
+    )
+
+    # Return batch with full summary (including breakdowns)
+    return eval_case_store.get_eval_batch(batch_id)
+
+
+@router.get("/eval-batches")
+async def list_eval_batches(limit: int = 20, offset: int = 0):
+    """List eval batch runs. Newest first."""
+    from orchestrator import eval_case_store
+
+    batches = eval_case_store.list_eval_batches(limit=limit, offset=offset)
+    return {
+        "count": len(batches),
+        "batches": batches,
+    }
+
+
+@router.get("/eval-batches/{batch_id}/items")
+async def list_eval_batch_items(batch_id: int, limit: int = 200, offset: int = 0):
+    """List per-case items for a batch."""
+    from orchestrator import eval_case_store
+
+    batch = eval_case_store.get_eval_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Eval batch không tồn tại.")
+
+    items = eval_case_store.list_eval_batch_items(batch_id, limit=limit, offset=offset)
+    return {
+        "batch_id": batch_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.get("/eval-batches/{batch_id}")
+async def get_eval_batch(batch_id: int):
+    """Get a single eval batch with full summary breakdown."""
+    from orchestrator import eval_case_store
+
+    batch = eval_case_store.get_eval_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Eval batch không tồn tại.")
+    return batch
+
+
 @router.post("/eval-cases/{case_id}/run")
 async def run_eval_case(case_id: int):
     """Run an eval case through the current pipeline and return pass/fail result.

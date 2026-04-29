@@ -381,3 +381,239 @@ def test_list_eval_runs_pagination():
     assert len(page1) == 2
     page2 = ecs.list_eval_runs(case["id"], limit=2, offset=2)
     assert len(page2) == 2
+
+
+# ─── eval batch CRUD ─────────────────────────────────────────────────────────
+
+def test_create_eval_batch_basic():
+    ecs = _store()
+    batch = ecs.create_eval_batch(
+        label="Post-tuning check",
+        filters={"status": "active"},
+        total_cases=5,
+        pass_count=3,
+        fail_count=2,
+    )
+    assert batch["id"] > 0
+    assert batch["label"] == "Post-tuning check"
+    assert batch["filters"] == {"status": "active"}
+    assert batch["status"] == "completed"
+    assert batch["total_cases"] == 5
+    assert batch["pass_count"] == 3
+    assert batch["fail_count"] == 2
+    assert "created_at" in batch
+    # summary is attached
+    assert "summary" in batch
+
+
+def test_create_eval_batch_no_label():
+    ecs = _store()
+    batch = ecs.create_eval_batch(
+        label=None,
+        filters={},
+        total_cases=2,
+        pass_count=2,
+        fail_count=0,
+    )
+    assert batch["label"] is None
+    assert batch["id"] > 0
+
+
+def test_get_eval_batch_not_found():
+    ecs = _store()
+    assert ecs.get_eval_batch(999) is None
+
+
+def test_get_eval_batch_includes_summary():
+    ecs = _store()
+    batch = ecs.create_eval_batch(
+        label=None,
+        filters={},
+        total_cases=0,
+        pass_count=0,
+        fail_count=0,
+    )
+    fetched = ecs.get_eval_batch(batch["id"])
+    assert fetched is not None
+    s = fetched["summary"]
+    assert s["total_cases"] == 0
+    assert s["pass_count"] == 0
+    assert s["fail_count"] == 0
+    assert s["pass_rate"] == 0.0
+    assert s["by_root_cause"] == {}
+    assert s["by_expected_topic"] == {}
+
+
+def test_list_eval_batches_empty():
+    ecs = _store()
+    assert ecs.list_eval_batches() == []
+
+
+def test_list_eval_batches_newest_first():
+    ecs = _store()
+    b1 = ecs.create_eval_batch(label="first", filters={}, total_cases=1, pass_count=1, fail_count=0)
+    time.sleep(0.01)
+    b2 = ecs.create_eval_batch(label="second", filters={}, total_cases=2, pass_count=1, fail_count=1)
+    batches = ecs.list_eval_batches()
+    assert len(batches) == 2
+    assert batches[0]["id"] == b2["id"]
+    assert batches[1]["id"] == b1["id"]
+
+
+def test_create_eval_batch_item_pass():
+    ecs = _store()
+    case = ecs.create_eval_case(feedback_id=1, question="Q", root_cause="retrieval_miss",
+                                 expected_topic="kubernetes")
+    run = ecs.create_eval_run(eval_case_id=case["id"], passed=True, checks={}, result_snapshot={})
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=1, pass_count=1, fail_count=0)
+
+    item = ecs.create_eval_batch_item(
+        batch_id=batch["id"],
+        eval_case_id=case["id"],
+        eval_run_id=run["id"],
+        passed=True,
+        root_cause="retrieval_miss",
+        expected_topic="kubernetes",
+    )
+    assert item["id"] > 0
+    assert item["batch_id"] == batch["id"]
+    assert item["eval_case_id"] == case["id"]
+    assert item["eval_run_id"] == run["id"]
+    assert item["pass"] is True
+    assert item["root_cause"] == "retrieval_miss"
+    assert item["expected_topic"] == "kubernetes"
+    assert item["error"] is None
+
+
+def test_create_eval_batch_item_fail():
+    ecs = _store()
+    case = ecs.create_eval_case(feedback_id=1, question="Q")
+    run = ecs.create_eval_run(eval_case_id=case["id"], passed=False, checks={}, result_snapshot={})
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=1, pass_count=0, fail_count=1)
+
+    item = ecs.create_eval_batch_item(
+        batch_id=batch["id"],
+        eval_case_id=case["id"],
+        eval_run_id=run["id"],
+        passed=False,
+        root_cause=None,
+        expected_topic=None,
+    )
+    assert item["pass"] is False
+    assert item["error"] is None
+
+
+def test_create_eval_batch_item_execution_error():
+    ecs = _store()
+    case = ecs.create_eval_case(feedback_id=1, question="Q")
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=1, pass_count=0, fail_count=0)
+
+    item = ecs.create_eval_batch_item(
+        batch_id=batch["id"],
+        eval_case_id=case["id"],
+        eval_run_id=None,
+        passed=None,
+        root_cause=None,
+        expected_topic=None,
+        error="Pipeline unavailable",
+    )
+    assert item["pass"] is None
+    assert item["eval_run_id"] is None
+    assert item["error"] == "Pipeline unavailable"
+
+
+def test_list_eval_batch_items_empty():
+    ecs = _store()
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=0, pass_count=0, fail_count=0)
+    assert ecs.list_eval_batch_items(batch["id"]) == []
+
+
+def test_list_eval_batch_items_ordered():
+    ecs = _store()
+    c1 = ecs.create_eval_case(feedback_id=1, question="Q1")
+    c2 = ecs.create_eval_case(feedback_id=2, question="Q2")
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=2, pass_count=1, fail_count=1)
+
+    it1 = ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c1["id"], eval_run_id=None,
+        passed=True, root_cause=None, expected_topic=None,
+    )
+    it2 = ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c2["id"], eval_run_id=None,
+        passed=False, root_cause=None, expected_topic=None,
+    )
+    items = ecs.list_eval_batch_items(batch["id"])
+    assert len(items) == 2
+    assert items[0]["id"] == it1["id"]
+    assert items[1]["id"] == it2["id"]
+
+
+def test_build_batch_summary_counts():
+    ecs = _store()
+    c1 = ecs.create_eval_case(feedback_id=1, question="Q1", root_cause="retrieval_miss",
+                               expected_topic="kubernetes")
+    c2 = ecs.create_eval_case(feedback_id=2, question="Q2", root_cause="retrieval_miss",
+                               expected_topic="kubernetes")
+    c3 = ecs.create_eval_case(feedback_id=3, question="Q3", root_cause="hallucination",
+                               expected_topic="docker")
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=3, pass_count=1, fail_count=2)
+
+    ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c1["id"], eval_run_id=None,
+        passed=True, root_cause="retrieval_miss", expected_topic="kubernetes",
+    )
+    ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c2["id"], eval_run_id=None,
+        passed=False, root_cause="retrieval_miss", expected_topic="kubernetes",
+    )
+    ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c3["id"], eval_run_id=None,
+        passed=False, root_cause="hallucination", expected_topic="docker",
+    )
+
+    fetched = ecs.get_eval_batch(batch["id"])
+    s = fetched["summary"]
+    assert s["total_cases"] == 3
+    assert s["pass_count"] == 1
+    assert s["fail_count"] == 2
+    assert s["error_count"] == 0
+    assert s["pass_rate"] == round(1 / 3, 4)
+
+    by_rc = s["by_root_cause"]
+    assert by_rc["retrieval_miss"]["pass"] == 1
+    assert by_rc["retrieval_miss"]["fail"] == 1
+    assert by_rc["hallucination"]["fail"] == 1
+
+    by_et = s["by_expected_topic"]
+    assert by_et["kubernetes"]["pass"] == 1
+    assert by_et["kubernetes"]["fail"] == 1
+    assert by_et["docker"]["fail"] == 1
+
+
+def test_build_batch_summary_excludes_errors_from_breakdown():
+    ecs = _store()
+    c1 = ecs.create_eval_case(feedback_id=1, question="Q1", root_cause="retrieval_miss",
+                               expected_topic="kubernetes")
+    c2 = ecs.create_eval_case(feedback_id=2, question="Q2", root_cause="retrieval_miss",
+                               expected_topic="kubernetes")
+    batch = ecs.create_eval_batch(label=None, filters={}, total_cases=2, pass_count=1, fail_count=0)
+
+    ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c1["id"], eval_run_id=None,
+        passed=True, root_cause="retrieval_miss", expected_topic="kubernetes",
+    )
+    ecs.create_eval_batch_item(
+        batch_id=batch["id"], eval_case_id=c2["id"], eval_run_id=None,
+        passed=None, root_cause="retrieval_miss", expected_topic="kubernetes",
+        error="Pipeline error",
+    )
+
+    fetched = ecs.get_eval_batch(batch["id"])
+    s = fetched["summary"]
+    assert s["total_cases"] == 2
+    assert s["pass_count"] == 1
+    assert s["error_count"] == 1
+    # Error item should not appear in by_root_cause breakdown
+    by_rc = s["by_root_cause"]
+    assert by_rc["retrieval_miss"]["pass"] == 1
+    assert by_rc["retrieval_miss"].get("fail", 0) == 0

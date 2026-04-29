@@ -29,11 +29,35 @@ Schema:
         run_at          REAL NOT NULL
     )
 
+    eval_batches(
+        id          INTEGER PK AUTOINCREMENT,
+        label       TEXT,
+        filters     TEXT NOT NULL DEFAULT '{}',  -- compact JSON
+        status      TEXT NOT NULL DEFAULT 'completed',
+        total_cases INTEGER NOT NULL DEFAULT 0,
+        pass_count  INTEGER NOT NULL DEFAULT 0,
+        fail_count  INTEGER NOT NULL DEFAULT 0,
+        created_at  REAL NOT NULL
+    )
+
+    eval_batch_items(
+        id              INTEGER PK AUTOINCREMENT,
+        batch_id        INTEGER NOT NULL,
+        eval_case_id    INTEGER NOT NULL,
+        eval_run_id     INTEGER,        -- NULL if execution failed
+        pass            INTEGER,        -- NULL if execution failed
+        root_cause      TEXT,
+        expected_topic  TEXT,
+        error           TEXT,           -- populated if execution failed
+        created_at      REAL NOT NULL
+    )
+
 Design notes:
 - Lazy init + thread-safe via _lock, matching feedback_store pattern.
 - One active eval case per feedback_id max (enforced at create time).
 - Expectation defaults derived heuristically from root_cause.
 - Run history kept compact; no heavy analytics.
+- Batch records reference per-case eval_run_ids; no large snapshot duplication.
 """
 from __future__ import annotations
 
@@ -184,6 +208,33 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 ON eval_runs(eval_case_id);
             CREATE INDEX IF NOT EXISTS idx_er_run_at
                 ON eval_runs(run_at DESC);
+
+            CREATE TABLE IF NOT EXISTS eval_batches (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                label       TEXT,
+                filters     TEXT NOT NULL DEFAULT '{}',
+                status      TEXT NOT NULL DEFAULT 'completed',
+                total_cases INTEGER NOT NULL DEFAULT 0,
+                pass_count  INTEGER NOT NULL DEFAULT 0,
+                fail_count  INTEGER NOT NULL DEFAULT 0,
+                created_at  REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_eb_created
+                ON eval_batches(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS eval_batch_items (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id        INTEGER NOT NULL,
+                eval_case_id    INTEGER NOT NULL,
+                eval_run_id     INTEGER,
+                pass            INTEGER,
+                root_cause      TEXT,
+                expected_topic  TEXT,
+                error           TEXT,
+                created_at      REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ebi_batch_id
+                ON eval_batch_items(batch_id);
             """
         )
     _initialised_paths.add(key)
@@ -466,6 +517,165 @@ def get_latest_run(eval_case_id: int) -> dict | None:
     return _run_row_to_dict(row) if row else None
 
 
+# ─── Eval Batch CRUD ─────────────────────────────────────────────────────────
+
+def create_eval_batch(
+    *,
+    label: str | None,
+    filters: dict,
+    total_cases: int,
+    pass_count: int,
+    fail_count: int,
+) -> dict:
+    """Persist a batch run record. Returns the new batch dict (without summary)."""
+    _ensure_schema()
+    now = time.time()
+    filters_json = json.dumps(filters, ensure_ascii=False)
+    with _lock, _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO eval_batches (label, filters, status, total_cases, pass_count, fail_count, created_at)
+            VALUES (?, ?, 'completed', ?, ?, ?, ?)
+            """,
+            (label or None, filters_json, total_cases, pass_count, fail_count, now),
+        )
+        new_id = cursor.lastrowid
+    return get_eval_batch(new_id)  # type: ignore[return-value]
+
+
+def get_eval_batch(batch_id: int) -> dict | None:
+    """Return a single eval batch with summary breakdown, or None if not found."""
+    _ensure_schema()
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM eval_batches WHERE id = ?", (batch_id,)
+        ).fetchone()
+    if not row:
+        return None
+    batch = _batch_row_to_dict(row)
+    batch["summary"] = _build_batch_summary(batch_id)
+    return batch
+
+
+def list_eval_batches(*, limit: int = 20, offset: int = 0) -> list[dict]:
+    """List eval batches. Newest first. Does not include per-batch summary breakdowns."""
+    _ensure_schema()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM eval_batches
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (max(1, min(limit, 200)), max(0, offset)),
+        ).fetchall()
+    return [_batch_row_to_dict(row) for row in rows]
+
+
+def create_eval_batch_item(
+    *,
+    batch_id: int,
+    eval_case_id: int,
+    eval_run_id: int | None,
+    passed: bool | None,
+    root_cause: str | None,
+    expected_topic: str | None,
+    error: str | None = None,
+) -> dict:
+    """Persist one batch item. Returns the new item dict."""
+    _ensure_schema()
+    now = time.time()
+    pass_int = None if passed is None else (1 if passed else 0)
+    with _lock, _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO eval_batch_items
+                (batch_id, eval_case_id, eval_run_id, pass, root_cause, expected_topic, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                eval_case_id,
+                eval_run_id,
+                pass_int,
+                root_cause or None,
+                expected_topic or None,
+                error or None,
+                now,
+            ),
+        )
+        new_id = cursor.lastrowid
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM eval_batch_items WHERE id = ?", (new_id,)
+        ).fetchone()
+    return _batch_item_row_to_dict(row)  # type: ignore[arg-type]
+
+
+def list_eval_batch_items(
+    batch_id: int,
+    *,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
+    """List items for a batch ordered by id (insertion order)."""
+    _ensure_schema()
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM eval_batch_items
+            WHERE batch_id = ?
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (batch_id, max(1, min(limit, 500)), max(0, offset)),
+        ).fetchall()
+    return [_batch_item_row_to_dict(row) for row in rows]
+
+
+def _build_batch_summary(batch_id: int) -> dict:
+    """Build pass/fail summary + by_root_cause + by_expected_topic breakdowns."""
+    items = list_eval_batch_items(batch_id, limit=500)
+    total = len(items)
+    pass_count = sum(1 for it in items if it["pass"] is True)
+    fail_count = sum(1 for it in items if it["pass"] is False)
+    error_count = sum(1 for it in items if it["pass"] is None)
+    pass_rate = round(pass_count / total, 4) if total else 0.0
+
+    by_root_cause: dict[str, dict] = {}
+    by_expected_topic: dict[str, dict] = {}
+
+    for it in items:
+        if it["pass"] is None:
+            continue  # execution errors are not included in breakdowns
+        rc = it.get("root_cause") or "unknown"
+        et = it.get("expected_topic") or "unknown"
+
+        if rc not in by_root_cause:
+            by_root_cause[rc] = {"pass": 0, "fail": 0}
+        if it["pass"]:
+            by_root_cause[rc]["pass"] += 1
+        else:
+            by_root_cause[rc]["fail"] += 1
+
+        if et not in by_expected_topic:
+            by_expected_topic[et] = {"pass": 0, "fail": 0}
+        if it["pass"]:
+            by_expected_topic[et]["pass"] += 1
+        else:
+            by_expected_topic[et]["fail"] += 1
+
+    return {
+        "total_cases": total,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "error_count": error_count,
+        "pass_rate": pass_rate,
+        "by_root_cause": by_root_cause,
+        "by_expected_topic": by_expected_topic,
+    }
+
+
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
 def _case_row_to_dict(row: sqlite3.Row) -> dict:
@@ -520,4 +730,36 @@ def _run_row_to_dict(row: sqlite3.Row) -> dict:
         "checks": checks,
         "result_snapshot": snapshot,
         "run_at": row["run_at"],
+    }
+
+
+def _batch_row_to_dict(row: sqlite3.Row) -> dict:
+    try:
+        filters = json.loads(row["filters"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        filters = {}
+    return {
+        "id": row["id"],
+        "label": row["label"],
+        "filters": filters,
+        "status": row["status"],
+        "total_cases": row["total_cases"],
+        "pass_count": row["pass_count"],
+        "fail_count": row["fail_count"],
+        "created_at": row["created_at"],
+    }
+
+
+def _batch_item_row_to_dict(row: sqlite3.Row) -> dict:
+    pass_val = row["pass"]
+    return {
+        "id": row["id"],
+        "batch_id": row["batch_id"],
+        "eval_case_id": row["eval_case_id"],
+        "eval_run_id": row["eval_run_id"],
+        "pass": None if pass_val is None else bool(pass_val),
+        "root_cause": row["root_cause"],
+        "expected_topic": row["expected_topic"],
+        "error": row["error"],
+        "created_at": row["created_at"],
     }

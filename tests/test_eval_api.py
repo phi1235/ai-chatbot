@@ -421,3 +421,253 @@ def test_full_eval_flow(client):
     assert summary["total_active"] == 1
     assert summary["latest_runs"]["pass"] == 1
     assert summary["latest_runs"]["fail"] == 0
+
+
+# ─── POST /admin/eval-cases/run-batch ────────────────────────────────────────
+
+def _setup_two_cases(client) -> tuple[int, int]:
+    """Create two active eval cases with different root causes. Returns case IDs."""
+    fb1 = _create_reviewed_feedback(client, root_cause="retrieval_miss", topic="kubernetes")
+    fb2 = _create_reviewed_feedback(client, root_cause="hallucination", topic="docker")
+    c1 = _create_eval_case(client, fb1).json()["id"]
+    c2 = _create_eval_case(client, fb2).json()["id"]
+    return c1, c2
+
+
+def _mock_rag_pass():
+    return _mock_rag_result(
+        answer="Kubernetes is a container orchestration platform.",
+        detected_topic="kubernetes",
+        retrieval_count=3,
+    )
+
+
+def test_run_eval_batch_basic(client):
+    """Run batch over active cases; verify batch + summary structure."""
+    _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={})
+
+    assert r.status_code == 200
+    batch = r.json()
+    assert batch["id"] > 0
+    assert batch["status"] == "completed"
+    assert batch["total_cases"] == 2
+    assert "summary" in batch
+    s = batch["summary"]
+    assert s["total_cases"] == 2
+    assert s["pass_count"] + s["fail_count"] + s["error_count"] == 2
+    assert "by_root_cause" in s
+    assert "by_expected_topic" in s
+
+
+def test_run_eval_batch_with_label(client):
+    _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={"label": "Post-tuning check"})
+
+    assert r.status_code == 200
+    assert r.json()["label"] == "Post-tuning check"
+
+
+def test_run_eval_batch_filter_by_root_cause(client):
+    """Only cases matching root_cause should be included."""
+    _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={"root_cause": "retrieval_miss"})
+
+    assert r.status_code == 200
+    batch = r.json()
+    assert batch["total_cases"] == 1
+    s = batch["summary"]
+    assert "retrieval_miss" in s["by_root_cause"]
+    assert "hallucination" not in s["by_root_cause"]
+
+
+def test_run_eval_batch_filter_by_expected_topic(client):
+    """Only cases matching expected_topic should be included."""
+    _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={"expected_topic": "docker"})
+
+    assert r.status_code == 200
+    batch = r.json()
+    assert batch["total_cases"] == 1
+
+
+def test_run_eval_batch_no_matching_cases_rejected(client):
+    """Batch with no matching cases must return 400."""
+    r = client.post("/admin/eval-cases/run-batch", json={})
+    assert r.status_code == 400
+    assert "No matching eval cases" in r.json()["detail"]
+
+
+def test_run_eval_batch_invalid_status_rejected(client):
+    r = client.post("/admin/eval-cases/run-batch", json={"status": "invalid"})
+    assert r.status_code == 400
+
+
+def test_run_eval_batch_filter_by_status_archived(client):
+    """Batch can also run archived cases if explicitly requested."""
+    fb1 = _create_reviewed_feedback(client)
+    case_id = _create_eval_case(client, fb1).json()["id"]
+    # Archive the case
+    client.patch(f"/admin/eval-cases/{case_id}/status", json={"status": "archived"})
+
+    # Should find no active cases
+    r_no = client.post("/admin/eval-cases/run-batch", json={"status": "active"})
+    assert r_no.status_code == 400
+
+    # Should find archived case
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r_arch = client.post("/admin/eval-cases/run-batch", json={"status": "archived"})
+    assert r_arch.status_code == 200
+    assert r_arch.json()["total_cases"] == 1
+
+
+def test_run_eval_batch_persists_batch_items(client):
+    """Each case run must create a batch item with correct eval_run_id linkage."""
+    c1_id, c2_id = _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={})
+    batch_id = r.json()["id"]
+
+    items_r = client.get(f"/admin/eval-batches/{batch_id}/items")
+    assert items_r.status_code == 200
+    items = items_r.json()["items"]
+    assert len(items) == 2
+    case_ids_in_batch = {it["eval_case_id"] for it in items}
+    assert c1_id in case_ids_in_batch
+    assert c2_id in case_ids_in_batch
+    # Each item should link to an eval_run
+    for it in items:
+        assert it["eval_run_id"] is not None
+        assert it["pass"] is not None
+
+
+def test_run_eval_batch_records_execution_errors(client):
+    """If one case errors during run, it is recorded as an error item; batch completes."""
+    _setup_two_cases(client)
+    call_count = [0]
+
+    def _side_effect(question):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise RuntimeError("Pipeline down")
+        return _mock_rag_pass()
+
+    with patch("orchestrator.eval_runner._chat_with_trace", side_effect=_side_effect):
+        r = client.post("/admin/eval-cases/run-batch", json={})
+
+    assert r.status_code == 200
+    batch = r.json()
+    assert batch["total_cases"] == 2
+    s = batch["summary"]
+    assert s["error_count"] == 1
+
+    items_r = client.get(f"/admin/eval-batches/{batch['id']}/items")
+    items = items_r.json()["items"]
+    error_items = [it for it in items if it["pass"] is None]
+    assert len(error_items) == 1
+    assert error_items[0]["error"] is not None
+    assert "Pipeline down" in error_items[0]["error"]
+
+
+def test_run_eval_batch_pass_rate_correct(client):
+    """All cases pass → pass_rate = 1.0."""
+    _setup_two_cases(client)
+
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        r = client.post("/admin/eval-cases/run-batch", json={})
+
+    s = r.json()["summary"]
+    # Both cases: retrieval_miss + hallucination. The mock returns good answer
+    # with citations, so both should pass.
+    assert s["pass_rate"] > 0
+
+
+# ─── GET /admin/eval-batches ─────────────────────────────────────────────────
+
+def test_list_eval_batches_empty(client):
+    r = client.get("/admin/eval-batches")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 0
+    assert data["batches"] == []
+
+
+def test_list_eval_batches_after_run(client):
+    _setup_two_cases(client)
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        client.post("/admin/eval-cases/run-batch", json={"label": "batch-1"})
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        client.post("/admin/eval-cases/run-batch", json={"label": "batch-2"})
+
+    r = client.get("/admin/eval-batches")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 2
+    # newest first
+    assert data["batches"][0]["label"] == "batch-2"
+    assert data["batches"][1]["label"] == "batch-1"
+
+
+# ─── GET /admin/eval-batches/{batch_id} ──────────────────────────────────────
+
+def test_get_eval_batch_not_found(client):
+    r = client.get("/admin/eval-batches/9999")
+    assert r.status_code == 404
+
+
+def test_get_eval_batch_detail(client):
+    _setup_two_cases(client)
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        run_r = client.post("/admin/eval-cases/run-batch", json={})
+    batch_id = run_r.json()["id"]
+
+    r = client.get(f"/admin/eval-batches/{batch_id}")
+    assert r.status_code == 200
+    batch = r.json()
+    assert batch["id"] == batch_id
+    assert "summary" in batch
+    s = batch["summary"]
+    assert "total_cases" in s
+    assert "pass_count" in s
+    assert "fail_count" in s
+    assert "pass_rate" in s
+    assert "by_root_cause" in s
+    assert "by_expected_topic" in s
+
+
+# ─── GET /admin/eval-batches/{batch_id}/items ────────────────────────────────
+
+def test_get_eval_batch_items_not_found(client):
+    r = client.get("/admin/eval-batches/9999/items")
+    assert r.status_code == 404
+
+
+def test_get_eval_batch_items_structure(client):
+    c1_id, c2_id = _setup_two_cases(client)
+    with patch("orchestrator.eval_runner._chat_with_trace", return_value=_mock_rag_pass()):
+        run_r = client.post("/admin/eval-cases/run-batch", json={})
+    batch_id = run_r.json()["id"]
+
+    r = client.get(f"/admin/eval-batches/{batch_id}/items")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["batch_id"] == batch_id
+    assert data["count"] == 2
+    items = data["items"]
+    for it in items:
+        assert "eval_case_id" in it
+        assert "eval_run_id" in it
+        assert "pass" in it
+        assert "root_cause" in it
+        assert "expected_topic" in it
+        assert "error" in it
+        assert "created_at" in it

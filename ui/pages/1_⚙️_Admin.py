@@ -2877,6 +2877,73 @@ def archive_eval_case(case_id: int) -> dict | None:
         return None
 
 
+def run_eval_batch(
+    label: str | None = None,
+    root_cause: str | None = None,
+    expected_topic: str | None = None,
+    limit: int | None = None,
+) -> dict | None:
+    try:
+        body: dict = {}
+        if label:
+            body["label"] = label
+        if root_cause:
+            body["root_cause"] = root_cause
+        if expected_topic:
+            body["expected_topic"] = expected_topic
+        if limit:
+            body["limit"] = limit
+        r = http().post(
+            f"{api_url()}/admin/eval-cases/run-batch",
+            json=body,
+            timeout=httpx.Timeout(600.0, connect=5.0, read=600.0),
+        )
+        if r.status_code == 400:
+            st.warning(r.json().get("detail", "No matching eval cases found."))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Batch run failed: {exc}")
+        return None
+
+
+def get_eval_batches(limit: int = 10, offset: int = 0) -> dict | None:
+    try:
+        r = http().get(
+            f"{api_url()}/admin/eval-batches",
+            params={"limit": limit, "offset": offset},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch eval batches: {exc}")
+        return None
+
+
+def get_eval_batch_detail(batch_id: int) -> dict | None:
+    try:
+        r = http().get(f"{api_url()}/admin/eval-batches/{batch_id}")
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch batch detail: {exc}")
+        return None
+
+
+def get_eval_batch_items(batch_id: int, limit: int = 200) -> dict | None:
+    try:
+        r = http().get(
+            f"{api_url()}/admin/eval-batches/{batch_id}/items",
+            params={"limit": limit},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch batch items: {exc}")
+        return None
+
+
 # ─── Page: Eval Cases ────────────────────────────────────────────────────────
 
 def page_eval_cases():
@@ -2917,6 +2984,144 @@ def page_eval_cases():
                     f"Eval case #{result['id']} created for feedback #{result['feedback_id']}."
                 )
                 st.rerun()
+
+    st.markdown("---")
+
+    # ── Batch Run ─────────────────────────────────────────────────────────────
+    st.markdown("**Batch Run**")
+    st.caption("Run many active eval cases at once and get a compact quality summary.")
+
+    with st.form("eval-batch-run-form"):
+        bcols = st.columns([3, 2, 2, 1])
+        with bcols[0]:
+            batch_label = st.text_input(
+                "Label (optional)",
+                placeholder="e.g. Post-retrieval-tuning check",
+                key="eb-label",
+            )
+        with bcols[1]:
+            batch_rc = st.text_input(
+                "Root cause filter",
+                placeholder="e.g. retrieval_miss",
+                key="eb-rc",
+            )
+        with bcols[2]:
+            batch_topic = st.text_input(
+                "Expected topic filter",
+                placeholder="e.g. kubernetes",
+                key="eb-topic",
+            )
+        with bcols[3]:
+            batch_limit = st.number_input(
+                "Max cases",
+                min_value=1,
+                max_value=200,
+                value=100,
+                key="eb-limit",
+            )
+        batch_submitted = st.form_submit_button("Run active eval batch", type="primary")
+
+    if batch_submitted:
+        with st.spinner("Running eval batch…"):
+            batch_result = run_eval_batch(
+                label=batch_label.strip() or None,
+                root_cause=batch_rc.strip() or None,
+                expected_topic=batch_topic.strip() or None,
+                limit=int(batch_limit),
+            )
+        if batch_result:
+            summary = batch_result.get("summary", {})
+            total = summary.get("total_cases", 0)
+            passes = summary.get("pass_count", 0)
+            fails = summary.get("fail_count", 0)
+            errors = summary.get("error_count", 0)
+            rate = summary.get("pass_rate", 0.0)
+
+            st.success(f"Batch #{batch_result['id']} complete")
+            rc_cols = st.columns(4)
+            rc_cols[0].metric("Cases", total)
+            rc_cols[1].metric("Pass", passes)
+            rc_cols[2].metric("Fail", fails)
+            rc_cols[3].metric("Pass rate", f"{rate * 100:.0f}%")
+
+            by_rc = summary.get("by_root_cause", {})
+            if by_rc:
+                fail_lines = [
+                    f"  {rc}: {v.get('fail', 0)} fail"
+                    for rc, v in by_rc.items()
+                    if v.get("fail", 0) > 0
+                ]
+                if fail_lines:
+                    st.markdown("**Failures by root cause:**")
+                    st.text("\n".join(fail_lines))
+            if errors:
+                st.warning(f"{errors} case(s) failed to execute (pipeline errors).")
+
+    st.markdown("---")
+
+    # ── Recent batches ────────────────────────────────────────────────────────
+    with st.expander("Recent batch runs", expanded=False):
+        batches_data = get_eval_batches(limit=10)
+        if batches_data is None or not batches_data.get("batches"):
+            st.caption("No batch runs yet.")
+        else:
+            for batch in batches_data["batches"]:
+                bid = batch["id"]
+                blabel = batch.get("label") or f"Batch #{bid}"
+                total = batch.get("total_cases", 0)
+                passes = batch.get("pass_count", 0)
+                fails = batch.get("fail_count", 0)
+                rate = f"{passes / total * 100:.0f}%" if total else "—"
+                created = datetime.fromtimestamp(batch["created_at"]).strftime("%Y-%m-%d %H:%M")
+
+                row_label = f"#{bid} · {blabel} · {total} cases · {passes} pass / {fails} fail · {rate} · {created}"
+                with st.expander(row_label, expanded=False):
+                    detail = get_eval_batch_detail(bid)
+                    if detail:
+                        dsummary = detail.get("summary", {})
+                        dcols = st.columns(4)
+                        dcols[0].metric("Total", dsummary.get("total_cases", 0))
+                        dcols[1].metric("Pass", dsummary.get("pass_count", 0))
+                        dcols[2].metric("Fail", dsummary.get("fail_count", 0))
+                        dcols[3].metric(
+                            "Pass rate",
+                            f"{dsummary.get('pass_rate', 0) * 100:.0f}%",
+                        )
+
+                        by_rc = dsummary.get("by_root_cause", {})
+                        by_et = dsummary.get("by_expected_topic", {})
+                        if by_rc or by_et:
+                            bk_cols = st.columns(2)
+                            with bk_cols[0]:
+                                if by_rc:
+                                    st.markdown("**By root cause:**")
+                                    for rc, v in by_rc.items():
+                                        p, f = v.get("pass", 0), v.get("fail", 0)
+                                        st.text(f"  {rc}: {p} pass / {f} fail")
+                            with bk_cols[1]:
+                                if by_et:
+                                    st.markdown("**By topic:**")
+                                    for et, v in by_et.items():
+                                        p, f = v.get("pass", 0), v.get("fail", 0)
+                                        st.text(f"  {et}: {p} pass / {f} fail")
+
+                        items_data = get_eval_batch_items(bid, limit=200)
+                        if items_data and items_data.get("items"):
+                            st.markdown("**Per-case results:**")
+                            for it in items_data["items"]:
+                                pass_label = (
+                                    "PASS" if it["pass"] is True
+                                    else "FAIL" if it["pass"] is False
+                                    else "ERROR"
+                                )
+                                rc_note = it.get("root_cause") or "—"
+                                err_note = f"  · {it['error'][:80]}" if it.get("error") else ""
+                                st.caption(
+                                    f"case #{it['eval_case_id']} [{pass_label}]"
+                                    f"  rc={rc_note}"
+                                    f"  run_id={it.get('eval_run_id') or '—'}"
+                                    f"{err_note}"
+                                )
 
     st.markdown("---")
 
