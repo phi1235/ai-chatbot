@@ -799,6 +799,7 @@ with st.sidebar:
             "Coverage Gaps",
             "Feedback",
             "Action Queue",
+            "Eval Cases",
             "Sessions",
             "Maintenance",
         ],
@@ -2789,6 +2790,277 @@ def page_feedback_actions():
                 st.caption(f"Status: {status} — no further actions available.")
 
 
+# ─── Eval Cases API helpers ─────────────────────────────────────────────────
+
+def create_eval_case(feedback_id: int) -> dict | None:
+    try:
+        r = http().post(f"{api_url()}/admin/feedback/{feedback_id}/eval-case")
+        if r.status_code == 409:
+            st.warning(r.json().get("detail", "Active eval case already exists for this feedback."))
+            return None
+        if r.status_code == 400:
+            st.warning(r.json().get("detail", "Cannot create eval case."))
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Create eval case failed: {exc}")
+        return None
+
+
+def get_eval_cases(
+    status: str | None = None,
+    root_cause: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict | None:
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if root_cause:
+            params["root_cause"] = root_cause
+        r = http().get(f"{api_url()}/admin/eval-cases", params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch eval cases: {exc}")
+        return None
+
+
+def get_eval_cases_summary() -> dict | None:
+    try:
+        r = http().get(f"{api_url()}/admin/eval-cases/summary")
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch eval cases summary: {exc}")
+        return None
+
+
+def run_eval_case(case_id: int) -> dict | None:
+    try:
+        r = http().post(
+            f"{api_url()}/admin/eval-cases/{case_id}/run",
+            timeout=httpx.Timeout(120.0, connect=5.0, read=120.0),
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Run eval case failed: {exc}")
+        return None
+
+
+def get_eval_case_runs(case_id: int, limit: int = 10) -> dict | None:
+    try:
+        r = http().get(
+            f"{api_url()}/admin/eval-cases/{case_id}/runs",
+            params={"limit": limit},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Cannot fetch runs: {exc}")
+        return None
+
+
+def archive_eval_case(case_id: int) -> dict | None:
+    try:
+        r = http().patch(
+            f"{api_url()}/admin/eval-cases/{case_id}/status",
+            json={"status": "archived"},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:
+        st.error(f"Archive failed: {exc}")
+        return None
+
+
+# ─── Page: Eval Cases ────────────────────────────────────────────────────────
+
+def page_eval_cases():
+    render_page_header(
+        "Eval Cases",
+        "Regression quality cases derived from reviewed feedback",
+    )
+
+    summary = get_eval_cases_summary()
+    if summary:
+        c = st.columns(4)
+        c[0].metric("Active cases", summary.get("total_active", 0))
+        c[1].metric("Archived", summary.get("total_archived", 0))
+        lr = summary.get("latest_runs", {})
+        c[2].metric("Latest pass", lr.get("pass", 0))
+        c[3].metric("Latest fail", lr.get("fail", 0))
+
+    st.markdown("&nbsp;")
+
+    # ── Create eval case from feedback ───────────────────────────────────────
+    with st.expander("Create eval case from reviewed feedback", expanded=False):
+        st.caption(
+            "Enter a reviewed feedback ID to create an eval case. "
+            "The feedback must have been reviewed (not pending)."
+        )
+        with st.form("create-eval-case-form"):
+            fb_id_input = st.number_input(
+                "Feedback ID",
+                min_value=1,
+                step=1,
+                key="ec-create-fb-id",
+            )
+            submitted = st.form_submit_button("Create eval case", type="primary")
+        if submitted:
+            result = create_eval_case(int(fb_id_input))
+            if result:
+                st.success(
+                    f"Eval case #{result['id']} created for feedback #{result['feedback_id']}."
+                )
+                st.rerun()
+
+    st.markdown("---")
+
+    # ── Filter bar ────────────────────────────────────────────────────────────
+    fcols = st.columns([2, 2, 1])
+    with fcols[0]:
+        filter_status = st.selectbox(
+            "Status",
+            options=["active", "archived", "all"],
+            index=0,
+            key="ec-filter-status",
+        )
+    with fcols[1]:
+        filter_rc = st.text_input(
+            "Root cause (optional)",
+            placeholder="e.g. retrieval_miss",
+            key="ec-filter-rc",
+        )
+
+    status_param = None if filter_status == "all" else filter_status
+    rc_param = filter_rc.strip() or None
+
+    data = get_eval_cases(status=status_param, root_cause=rc_param, limit=50)
+    if data is None:
+        return
+
+    items = data.get("items", [])
+    if not items:
+        st.info("No eval cases found.")
+        return
+
+    st.caption(f"{len(items)} eval case(s) shown.")
+
+    # ── Case list ─────────────────────────────────────────────────────────────
+    for case in items:
+        case_id = case["id"]
+        status = case.get("status", "active")
+        root_cause = case.get("root_cause") or "—"
+        expected_topic = case.get("expected_topic") or "—"
+        latest_run = case.get("latest_run")
+
+        if latest_run:
+            run_pass = latest_run.get("pass")
+            run_badge = "PASS" if run_pass else "FAIL"
+            run_badge_color = "green" if run_pass else "red"
+        else:
+            run_badge = "—"
+            run_badge_color = "gray"
+
+        label = (
+            f"[#{case_id}] {case['question'][:80]}"
+            f"  |  {root_cause}  |  {run_badge}"
+        )
+        with st.expander(label, expanded=False):
+            col_meta, col_actions = st.columns([3, 1])
+
+            with col_meta:
+                st.markdown(f"**Question:** {case['question']}")
+                st.markdown(
+                    f"**Root cause:** `{root_cause}` &nbsp; "
+                    f"**Expected topic:** `{expected_topic}` &nbsp; "
+                    f"**Status:** `{status}`",
+                    unsafe_allow_html=True,
+                )
+
+                exp = case.get("eval_expectations", {})
+                exp_parts = []
+                if exp.get("should_not_fallback") is not None:
+                    exp_parts.append(f"no_fallback={exp['should_not_fallback']}")
+                if exp.get("should_have_citations") is not None:
+                    exp_parts.append(f"has_citations={exp['should_have_citations']}")
+                if exp.get("min_retrieval_count") is not None:
+                    exp_parts.append(f"min_retrieval={exp['min_retrieval_count']}")
+                if exp.get("expected_topic"):
+                    exp_parts.append(f"topic={exp['expected_topic']}")
+                st.markdown(
+                    "**Expectations:** " + (", ".join(exp_parts) if exp_parts else "_(none set)_")
+                )
+
+                if latest_run:
+                    run_time = datetime.fromtimestamp(latest_run["run_at"]).strftime(
+                        "%Y-%m-%d %H:%M"
+                    )
+                    st.markdown(
+                        f"**Latest run:** "
+                        f"<span style='color:{run_badge_color};font-weight:600'>{run_badge}</span>"
+                        f" at {run_time}",
+                        unsafe_allow_html=True,
+                    )
+                    snap = latest_run.get("result_snapshot", {})
+                    if snap:
+                        st.caption(
+                            f"topic={snap.get('detected_topic') or '—'}  "
+                            f"retrieval={snap.get('retrieval_count', 0)}  "
+                            f"fallback={snap.get('is_fallback', False)}"
+                        )
+                    checks = latest_run.get("checks", {})
+                    if checks:
+                        check_lines = []
+                        for name, chk in checks.items():
+                            if chk.get("skipped"):
+                                icon = "⬜"
+                            elif chk.get("pass"):
+                                icon = "✓"
+                            else:
+                                icon = "✗"
+                            check_lines.append(f"{icon} **{name}**: {chk.get('reason', '')}")
+                        st.markdown("  \n".join(check_lines))
+                else:
+                    st.caption("Not yet run.")
+
+            with col_actions:
+                if status == "active":
+                    if st.button("Run now", key=f"ec-run-{case_id}", type="primary"):
+                        with st.spinner("Running..."):
+                            run_result = run_eval_case(case_id)
+                        if run_result:
+                            if run_result.get("pass"):
+                                st.success("PASS")
+                            else:
+                                st.error("FAIL")
+                            st.rerun()
+
+                    if st.button("Archive", key=f"ec-archive-{case_id}"):
+                        if archive_eval_case(case_id):
+                            st.success("Archived.")
+                            st.rerun()
+                else:
+                    st.caption("Archived.")
+
+            # Run history (collapsed)
+            if st.button("Show run history", key=f"ec-hist-{case_id}"):
+                hist = get_eval_case_runs(case_id, limit=10)
+                if hist and hist.get("runs"):
+                    for run in hist["runs"]:
+                        run_time = datetime.fromtimestamp(run["run_at"]).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        badge = "PASS" if run.get("pass") else "FAIL"
+                        st.markdown(f"- **{badge}** at {run_time}")
+                else:
+                    st.caption("No run history.")
+
+
 # ─── Render selected page ───────────────────────────────────────────────────
 PAGE_RENDERERS = {
     "Dashboard": page_dashboard,
@@ -2798,6 +3070,7 @@ PAGE_RENDERERS = {
     "Coverage Gaps": page_coverage_gaps,
     "Feedback": page_feedback,
     "Action Queue": page_feedback_actions,
+    "Eval Cases": page_eval_cases,
     "Sessions": page_sessions,
     "Maintenance": page_maintenance,
 }

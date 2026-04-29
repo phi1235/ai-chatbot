@@ -1056,3 +1056,155 @@ async def feedback_actions_summary():
     """Quick summary counts for the feedback action queue dashboard."""
     from orchestrator import feedback_action_store
     return feedback_action_store.count_summary()
+
+
+# ─── Eval Cases ──────────────────────────────────────────────────────────────
+
+@router.post("/feedback/{feedback_id}/eval-case")
+async def create_eval_case_from_feedback(feedback_id: int):
+    """Create a lightweight eval case from a reviewed feedback record.
+
+    Feedback must exist and must have been reviewed (review_status != 'pending').
+    At most one active eval case is allowed per feedback record.
+    Expectations are derived heuristically from root_cause.
+    """
+    from orchestrator import eval_case_store, feedback_store
+
+    feedback = feedback_store.get_feedback(feedback_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback không tồn tại.")
+    if not feedback.get("reviewed") or feedback.get("review_status") == "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Feedback phải được review trước khi tạo eval case.",
+        )
+
+    try:
+        case = eval_case_store.create_eval_case(
+            feedback_id=feedback_id,
+            question=feedback["question"],
+            root_cause=feedback.get("root_cause"),
+            expected_topic=feedback.get("detected_topic"),
+            rewritten_query=feedback.get("rewritten_query"),
+            citations_snapshot=feedback.get("citations_snapshot") or None,
+            trace_snapshot=feedback.get("trace_snapshot") or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return case
+
+
+@router.get("/eval-cases")
+async def list_eval_cases(
+    status: str | None = None,
+    root_cause: str | None = None,
+    expected_topic: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List eval cases with optional filters. Includes latest run per case."""
+    from orchestrator import eval_case_store
+
+    if status and status not in ("active", "archived"):
+        raise HTTPException(status_code=400, detail="status phải là 'active' hoặc 'archived'.")
+
+    items = eval_case_store.list_eval_cases(
+        status=status,
+        root_cause=root_cause,
+        expected_topic=expected_topic,
+        limit=limit,
+        offset=offset,
+    )
+    summary = eval_case_store.count_summary()
+    return {
+        "count": len(items),
+        "summary": summary,
+        "items": items,
+    }
+
+
+@router.get("/eval-cases/summary")
+async def eval_cases_summary():
+    """Summary counts for eval cases dashboard (active, pass/fail by latest run)."""
+    from orchestrator import eval_case_store
+    return eval_case_store.count_summary()
+
+
+@router.post("/eval-cases/{case_id}/run")
+async def run_eval_case(case_id: int):
+    """Run an eval case through the current pipeline and return pass/fail result.
+
+    Calls the existing RAG pipeline with the case question.
+    Checks result deterministically against stored expectations.
+    Persists and returns the run record.
+    """
+    from orchestrator import eval_case_store
+    from orchestrator.eval_runner import run_eval_case as _run
+
+    case = eval_case_store.get_eval_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Eval case không tồn tại.")
+    if case.get("status") == "archived":
+        raise HTTPException(status_code=400, detail="Cannot run an archived eval case.")
+
+    try:
+        run = _run(case)
+    except Exception as exc:
+        logger.error(
+            "Eval case run failed",
+            extra={"case_id": case_id, "error": str(exc)},
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"Eval run failed: {exc}") from exc
+
+    logger.info(
+        "Eval case run completed",
+        extra={
+            "case_id": case_id,
+            "pass": run.get("pass"),
+        },
+    )
+    return run
+
+
+@router.get("/eval-cases/{case_id}/runs")
+async def list_eval_case_runs(
+    case_id: int,
+    limit: int = 20,
+    offset: int = 0,
+):
+    """List run history for an eval case. Newest first."""
+    from orchestrator import eval_case_store
+
+    case = eval_case_store.get_eval_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Eval case không tồn tại.")
+
+    runs = eval_case_store.list_eval_runs(case_id, limit=limit, offset=offset)
+    return {
+        "eval_case_id": case_id,
+        "count": len(runs),
+        "runs": runs,
+    }
+
+
+@router.patch("/eval-cases/{case_id}/status")
+async def update_eval_case_status(case_id: int, body: dict = Body(...)):
+    """Update status (active | archived) of an eval case."""
+    from orchestrator import eval_case_store
+
+    status = (body.get("status") or "").strip()
+    if status not in ("active", "archived"):
+        raise HTTPException(status_code=400, detail="status phải là 'active' hoặc 'archived'.")
+
+    case = eval_case_store.get_eval_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Eval case không tồn tại.")
+
+    try:
+        updated = eval_case_store.update_eval_case_status(case_id, status=status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return updated
