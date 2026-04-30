@@ -8,17 +8,19 @@ from __future__ import annotations
 import streamlit as st
 
 from ui.admin.api_client import check_backend
-from ui.admin.pages.coverage_gaps import page_coverage_gaps
-from ui.admin.pages.dashboard import page_dashboard
-from ui.admin.pages.eval_cases import page_eval_cases
-from ui.admin.pages.eval_gates import page_eval_gates
-from ui.admin.pages.feedback import page_feedback
-from ui.admin.pages.feedback_actions import page_feedback_actions
-from ui.admin.pages.freshness import page_freshness_center
-from ui.admin.pages.health import page_health
-from ui.admin.pages.maintenance import page_maintenance
-from ui.admin.pages.sessions import page_sessions
-from ui.admin.pages.sources import page_sources
+from ui.admin.pages import (
+    page_coverage_gaps,
+    page_dashboard,
+    page_eval_cases,
+    page_eval_gates,
+    page_feedback,
+    page_feedback_actions,
+    page_freshness_center,
+    page_health,
+    page_maintenance,
+    page_sessions,
+    page_sources,
+)
 from ui.admin.runtime import api_url
 from ui.admin.styles import apply_styles
 
