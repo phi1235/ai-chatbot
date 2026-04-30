@@ -103,21 +103,11 @@ def _ensure_schema(db_path: Path | None = None) -> None:
                 trace_snapshot TEXT,
                 root_cause TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_feedback_created
-                ON feedbacks(created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_feedback_type
-                ON feedbacks(feedback_type);
-            CREATE INDEX IF NOT EXISTS idx_feedback_review_status
-                ON feedbacks(review_status);
-            CREATE INDEX IF NOT EXISTS idx_feedback_session
-                ON feedbacks(session_id);
-            CREATE INDEX IF NOT EXISTS idx_feedback_root_cause
-                ON feedbacks(root_cause);
-            CREATE INDEX IF NOT EXISTS idx_feedback_detected_topic
-                ON feedbacks(detected_topic);
             """
         )
-        # Backward-compatible migration: add columns if missing
+        # Backward-compatible migration: add columns if missing before creating
+        # indexes that depend on those columns. Older DBs may predate the debug /
+        # review-classification fields introduced after the initial rollout.
         existing = {
             row[1]
             for row in conn.execute("PRAGMA table_info(feedbacks)").fetchall()
@@ -133,6 +123,23 @@ def _ensure_schema(db_path: Path | None = None) -> None:
         for col, col_type in migrate_cols:
             if col not in existing:
                 conn.execute(f"ALTER TABLE feedbacks ADD COLUMN {col} {col_type}")
+
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_feedback_created
+                ON feedbacks(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_feedback_type
+                ON feedbacks(feedback_type);
+            CREATE INDEX IF NOT EXISTS idx_feedback_review_status
+                ON feedbacks(review_status);
+            CREATE INDEX IF NOT EXISTS idx_feedback_session
+                ON feedbacks(session_id);
+            CREATE INDEX IF NOT EXISTS idx_feedback_root_cause
+                ON feedbacks(root_cause);
+            CREATE INDEX IF NOT EXISTS idx_feedback_detected_topic
+                ON feedbacks(detected_topic);
+            """
+        )
     _initialised_paths.add(key)
 
 

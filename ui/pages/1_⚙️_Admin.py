@@ -237,6 +237,7 @@ def get_feedback_list(
         return r.json()
     except Exception as exc:
         st.error(f"Không lấy được feedback: {exc}")
+        st.session_state["feedback_fetch_failed"] = True
         return None
 
 
@@ -2321,9 +2322,16 @@ def page_feedback():
         "Review, diagnose, and classify user feedback",
     )
 
+    st.session_state.pop("feedback_fetch_failed", None)
     data = get_feedback_list(limit=200)
     if not data:
-        st.info("No feedback yet.")
+        if st.session_state.get("feedback_fetch_failed"):
+            st.warning(
+                "Feedback API đang lỗi hoặc không đọc được DB. "
+                "Đây không phải trạng thái 'không có dữ liệu'."
+            )
+        else:
+            st.info("No feedback yet.")
         return
 
     summary = data.get("summary", {})
@@ -2982,6 +2990,10 @@ def page_eval_cases():
         "Regression quality cases derived from reviewed feedback",
     )
 
+    st.caption(
+        "Flow: user gửi feedback → admin review/classify → tạo eval case từ feedback đã review → chạy single case hoặc batch."
+    )
+
     summary = get_eval_cases_summary()
     if summary:
         c = st.columns(4)
@@ -3019,7 +3031,9 @@ def page_eval_cases():
 
     # ── Batch Run ─────────────────────────────────────────────────────────────
     st.markdown("**Batch Run**")
-    st.caption("Run many active eval cases at once and get a compact quality summary.")
+    st.caption(
+        "Run nhiều active eval cases cùng lúc để xem pass/fail rate sau một thay đổi retrieval/prompt/model."
+    )
 
     with st.form("eval-batch-run-form"):
         bcols = st.columns([3, 2, 2, 1])
@@ -3703,6 +3717,10 @@ def page_eval_gates():
         "Automated eval gate configs and run history",
     )
 
+    st.caption(
+        "Gate config = luật pass/fail tự động cho một nhóm eval cases. Dùng để so sánh candidate run với baseline run trước đó và phát hiện regression."
+    )
+
     tab_configs, tab_runs, tab_triage, tab_new = st.tabs(
         ["Gate Configs", "Recent Runs", "Triage", "New Config"]
     )
@@ -4089,6 +4107,13 @@ def page_eval_gates():
     # ── Tab: New Config ────────────────────────────────────────────────────────
     with tab_new:
         st.subheader("Create Gate Config")
+        st.caption(
+            "Tạo gate khi anh muốn tự động chặn regression: ví dụ nightly check cho toàn bộ active cases, "
+            "hoặc CI smoke check cho một nhóm case retrieval_miss / theo topic cụ thể."
+        )
+        st.info(
+            "Gợi ý nhanh: dùng kind=nightly cho kiểm tra định kỳ; dùng kind=ci cho bộ smoke/regression nhỏ trước merge/deploy."
+        )
 
         with st.form("new_gate_config"):
             col_a, col_b = st.columns(2)
@@ -4118,10 +4143,12 @@ def page_eval_gates():
                     "Max pass rate drop (0–1, blank = no limit)",
                     min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f"
                 )
+                st.caption("Ví dụ 0.05 = fail nếu pass rate giảm hơn 5% so với baseline.")
                 nc_fail_count_increase = st.number_input(
                     "Max fail count increase (blank = no limit)",
                     min_value=0, max_value=500, value=0, step=1
                 )
+                st.caption("Ví dụ 2 = fail nếu số case fail tăng hơn 2 so với baseline.")
                 nc_block_error = st.checkbox("Block on error count increase", value=False)
 
             submitted = st.form_submit_button("Create config", type="primary")
