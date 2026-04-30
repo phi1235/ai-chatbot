@@ -20,13 +20,14 @@ def render_page_header(title: str, subtitle: str = "", actions: callable = None)
 
 
 def status_row_html(r: dict) -> str:
-    cls = r["status"].lower()
+    status = str(r.get("status") or "UNKNOWN")
+    cls = status.lower()
     topic = r.get("topic") or "-"
     location = r.get("location") or r.get("url") or ""
     detail = r.get("detail") or r.get("notes") or r.get("error_message") or ""
     return (
         f'<div class="status-row {cls}">'
-        f'  <span class="badge">{r["status"]}</span>'
+        f'  <span class="badge">{status}</span>'
         f'  <span class="topic">[{topic}]</span>'
         f'  <span class="url">{location[:90]}</span>'
         f'  <span class="detail">{detail}</span>'

@@ -234,7 +234,6 @@ def page_freshness_center():
             "HTTP": st.column_config.TextColumn("HTTP"),
             "Checked at": st.column_config.TextColumn("Checked at", width="medium"),
             "Notes": st.column_config.TextColumn("Notes", width="large"),
-            "_url": None,
         },
     )
 
