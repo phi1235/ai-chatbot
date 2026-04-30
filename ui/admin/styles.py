@@ -86,10 +86,52 @@ def apply_styles() -> None:
         font-weight: 700;
         margin: 0;
     }
+    .brand-text {
+        font-size: 0.98rem;
+        font-weight: 700;
+        margin: 0;
+    }
     .brand-sub {
         font-size: 0.78rem;
         color: var(--text-muted);
         margin: 0;
+    }
+
+    .nav-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-subtle);
+        padding: 0 0.6rem 0.5rem 0.6rem;
+    }
+    .nav-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        margin-bottom: 1rem;
+    }
+    .nav-item {
+        display: block;
+        width: 100%;
+        padding: 0.62rem 0.72rem;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        color: var(--text-muted);
+        background: transparent;
+        font-size: 0.92rem;
+        font-weight: 500;
+        text-decoration: none;
+    }
+    .nav-item.active {
+        color: var(--text);
+        background: var(--accent-soft);
+        border-color: #ead8d0;
+        font-weight: 600;
+    }
+    .nav-item:hover {
+        color: var(--text);
+        background: #f7f5f2;
     }
 
     .page-header {

@@ -40,6 +40,23 @@ st.set_page_config(
 
 apply_styles()
 
+NAV_ITEMS = [
+    "Dashboard",
+    "Sources",
+    "Health Check",
+    "Freshness Center",
+    "Coverage Gaps",
+    "Feedback",
+    "Action Queue",
+    "Eval Cases",
+    "Eval Gates",
+    "Sessions",
+    "Maintenance",
+]
+
+if "admin_nav" not in st.session_state or st.session_state["admin_nav"] not in NAV_ITEMS:
+    st.session_state["admin_nav"] = "Dashboard"
+
 with st.sidebar:
     st.markdown(
         '<div class="brand">'
@@ -53,24 +70,20 @@ with st.sidebar:
     )
 
     st.markdown('<div class="nav-label">Quản lý</div>', unsafe_allow_html=True)
-    page = st.radio(
-        "Navigation",
-        options=[
-            "Dashboard",
-            "Sources",
-            "Health Check",
-            "Freshness Center",
-            "Coverage Gaps",
-            "Feedback",
-            "Action Queue",
-            "Eval Cases",
-            "Eval Gates",
-            "Sessions",
-            "Maintenance",
-        ],
-        label_visibility="collapsed",
-        key="admin_nav",
-    )
+    current_page = st.session_state["admin_nav"]
+    for item in NAV_ITEMS:
+        is_active = item == current_page
+        if st.button(
+            item,
+            key=f"nav-{item}",
+            use_container_width=True,
+            type="secondary",
+            disabled=is_active,
+        ):
+            st.session_state["admin_nav"] = item
+            st.rerun()
+
+    page = st.session_state["admin_nav"]
 
     st.markdown('<div style="flex-grow:1; min-height: 2rem"></div>', unsafe_allow_html=True)
 
