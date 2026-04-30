@@ -5,13 +5,6 @@ Backend endpoints dưới /admin/* (api/admin.py).
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 import streamlit as st
 
 from ui.admin.api_client import check_backend
@@ -30,6 +23,7 @@ from ui.admin.pages import (
 )
 from ui.admin.runtime import api_url
 from ui.admin.styles import apply_styles
+from ui.pages import _bootstrap  # noqa: F401
 
 st.set_page_config(
     page_title="Admin · AI Knowledge Assistant",
